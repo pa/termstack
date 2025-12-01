@@ -1,0 +1,30 @@
+version: v1
+
+app:
+  name: "Simple Test"
+
+start: main
+
+pages:
+  main:
+    title: "Main Page"
+    data:
+      type: cli
+      command: "echo"
+      args: ['{"items": [{"name": "test", "status": "active"}]}']
+      items: "$.items[*]"
+    view:
+      layout: table
+      columns:
+        - path: "$.name"
+          display: "Name"
+        - path: "$.status"
+          display: "Status"
+
+    actions:
+      - key: "p"
+        name: "Print"
+        description: "Print the item name"
+        command: "echo"
+        args: ["Selected: {{ name }}"]
+        success_message: "Printed {{ name }}"
