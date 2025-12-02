@@ -73,7 +73,12 @@ impl ConfigValidator {
 
     fn validate_data_source(data_source: &DataSource) -> Result<()> {
         match data_source {
-            DataSource::Single(single) => Self::validate_single_data_source(single),
+            DataSource::SingleOrStream(super::schema::SingleOrStream::Single(single)) => {
+                Self::validate_single_data_source(single)
+            }
+            DataSource::SingleOrStream(super::schema::SingleOrStream::Stream(stream)) => {
+                Self::validate_stream_data_source(stream)
+            }
             DataSource::Multi(multi) => {
                 if multi.sources.is_empty() {
                     return Err(anyhow!("Multi data source must have at least one source"));
@@ -100,7 +105,9 @@ impl ConfigValidator {
                 }
             }
             DataSourceType::Stream => {
-                return Err(anyhow!("Stream data source not yet supported (Phase 2)"));
+                return Err(anyhow!(
+                    "SingleDataSource cannot have type 'stream'. Use StreamDataSource instead."
+                ));
             }
         }
 
@@ -203,6 +210,46 @@ impl ConfigValidator {
                     builtin,
                     valid_builtins
                 ));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn validate_stream_data_source(source: &super::schema::StreamDataSource) -> Result<()> {
+        match source.source_type {
+            DataSourceType::Stream => {
+                // Validate that at least one source is specified
+                if source.command.is_none() && source.websocket.is_none() && source.file.is_none() {
+                    return Err(anyhow!(
+                        "Stream data source must have 'command', 'websocket', or 'file' field"
+                    ));
+                }
+
+                // Validate CLI streaming
+                if source.command.is_some() && source.command.as_ref().unwrap().is_empty() {
+                    return Err(anyhow!("Stream command cannot be empty"));
+                }
+
+                // Validate buffer_size
+                if source.buffer_size == 0 {
+                    return Err(anyhow!("Stream buffer_size must be greater than 0"));
+                }
+
+                // Validate buffer_time format if present
+                if let Some(buffer_time) = &source.buffer_time {
+                    humantime::parse_duration(buffer_time)
+                        .with_context(|| format!("Invalid buffer_time format: {}", buffer_time))?;
+                }
+
+                // Validate timeout format if present
+                if let Some(timeout) = &source.timeout {
+                    humantime::parse_duration(timeout)
+                        .with_context(|| format!("Invalid timeout format: {}", timeout))?;
+                }
+            }
+            _ => {
+                return Err(anyhow!("Stream data source must have type 'stream'"));
             }
         }
 

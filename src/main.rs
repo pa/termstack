@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use termstack::{
     app::App,
     config::{ConfigLoader, ConfigValidator},
+    globals,
 };
 
 #[derive(Parser)]
@@ -47,6 +48,10 @@ async fn main() -> color_eyre::Result<()> {
     println!("Validating config...");
     if let Err(e) = ConfigValidator::validate(&config) {
         eprintln!("✗ Config validation failed: {}", e);
+        eprintln!("\nFull error chain:");
+        for cause in e.chain() {
+            eprintln!("  - {}", cause);
+        }
         std::process::exit(1);
     }
     println!("✓ Config is valid");
@@ -56,6 +61,12 @@ async fn main() -> color_eyre::Result<()> {
         println!("\n✓ Configuration is valid!");
         return Ok(());
     }
+
+    // Initialize globals
+    globals::init_config(config.clone())
+        .map_err(|e| color_eyre::eyre::eyre!("Failed to initialize config: {}", e))?;
+    globals::init_template_engine()
+        .map_err(|e| color_eyre::eyre::eyre!("Failed to initialize template engine: {}", e))?;
 
     // Show config summary
     if cli.verbose {

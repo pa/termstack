@@ -42,6 +42,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ansi-to-tui"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "67555e1f1ece39d737e28c8a017721287753af3f93225e4a445b29ccb0f5912c"
+dependencies = [
+ "nom",
+ "ratatui 0.29.0",
+ "simdutf8",
+ "smallvec",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "anstream"
 version = "0.6.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1941,6 +1954,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "simdutf8"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
+
+[[package]]
 name = "siphasher"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2115,6 +2134,7 @@ dependencies = [
 name = "termstack"
 version = "0.1.0"
 dependencies = [
+ "ansi-to-tui",
  "anyhow",
  "async-trait",
  "chrono",
@@ -2124,6 +2144,7 @@ dependencies = [
  "humansize",
  "humantime",
  "ratatui 0.29.0",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",

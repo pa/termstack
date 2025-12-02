@@ -58,8 +58,59 @@ pub struct Page {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum DataSource {
-    Single(SingleDataSource),
     Multi(MultiDataSource),
+    #[serde(with = "single_or_stream")]
+    SingleOrStream(SingleOrStream),
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum SingleOrStream {
+    Stream(StreamDataSource),
+    Single(SingleDataSource),
+}
+
+mod single_or_stream {
+    use super::*;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<SingleOrStream, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Helper {
+            #[serde(rename = "type")]
+            source_type: DataSourceType,
+        }
+
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let helper: Helper =
+            serde_json::from_value(value.clone()).map_err(serde::de::Error::custom)?;
+
+        match helper.source_type {
+            DataSourceType::Stream => {
+                let stream: StreamDataSource =
+                    serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+                Ok(SingleOrStream::Stream(stream))
+            }
+            _ => {
+                let single: SingleDataSource =
+                    serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+                Ok(SingleOrStream::Single(single))
+            }
+        }
+    }
+
+    pub fn serialize<S>(value: &SingleOrStream, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match value {
+            SingleOrStream::Stream(s) => s.serialize(serializer),
+            SingleOrStream::Single(s) => s.serialize(serializer),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -116,12 +167,54 @@ pub struct NamedDataSource {
     pub optional: bool,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StreamDataSource {
+    #[serde(rename = "type")]
+    pub source_type: DataSourceType,
+
+    // CLI streaming fields
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub shell: bool,
+    #[serde(default)]
+    pub working_dir: Option<String>,
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+
+    // WebSocket streaming fields (future)
+    #[serde(default)]
+    pub websocket: Option<String>,
+
+    // File tailing fields (future)
+    #[serde(default)]
+    pub file: Option<String>,
+
+    // Stream buffer configuration
+    #[serde(default = "default_buffer_size")]
+    pub buffer_size: usize,
+    #[serde(default)]
+    pub buffer_time: Option<String>,
+    #[serde(default = "default_true")]
+    pub follow: bool,
+
+    // Common fields
+    #[serde(default)]
+    pub timeout: Option<String>,
+}
+
+fn default_buffer_size() -> usize {
+    100
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum DataSourceType {
     Cli,
     Http,
-    Stream, // Phase 2
+    Stream,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -246,6 +339,10 @@ pub struct LogsView {
     pub follow: bool,
     #[serde(default)]
     pub wrap: bool,
+    #[serde(default)]
+    pub show_timestamps: bool,
+    #[serde(default)]
+    pub show_line_numbers: bool,
     #[serde(default)]
     pub syntax: Option<String>,
     #[serde(default)]

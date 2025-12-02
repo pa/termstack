@@ -7,25 +7,25 @@ use ratatui::{
     widgets::{Block, Borders, Cell, Paragraph, Row, Table},
 };
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
+use tokio::sync::mpsc;
 
 use crate::{
     action::executor::{ActionExecutor, ActionResult},
     config::{Config, View as ConfigView},
-    data::{DataCache, JsonPathExtractor},
+    data::{DataCache, JsonPathExtractor, StreamMessage},
     error::Result,
+    globals,
     navigation::{NavigationContext, NavigationFrame, NavigationStack},
-    template::{TemplateEngine, engine::TemplateContext},
+    template::engine::TemplateContext,
 };
 
 pub struct App {
-    config: Arc<Config>,
     running: bool,
     current_page: String,
     nav_stack: NavigationStack,
     nav_context: NavigationContext,
-    template_engine: TemplateEngine,
     data_cache: DataCache,
     action_executor: ActionExecutor,
 
@@ -50,6 +50,24 @@ pub struct App {
 
     // Auto-refresh timer
     last_refresh: std::time::Instant,
+
+    // Stream state
+    stream_active: bool,
+    stream_paused: bool,
+    stream_buffer: VecDeque<String>,
+    stream_receiver: Option<mpsc::Receiver<StreamMessage>>,
+    stream_status: StreamStatus,
+
+    // Logs view settings
+    logs_follow: bool,
+    logs_wrap: bool,
+    logs_horizontal_scroll: usize,
+    logs_search_mode: bool,
+    logs_search_query: String,
+    logs_filter_active: bool,
+
+    // UI state
+    needs_clear: bool,
 }
 
 #[derive(Clone)]
@@ -64,20 +82,26 @@ struct ActionMessage {
     is_error: bool,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+enum StreamStatus {
+    Idle,
+    Connected,
+    Streaming,
+    Stopped,
+    Error(String),
+}
+
 impl App {
     pub fn new(config: Config) -> Result<Self> {
         let current_page = config.start.clone();
         let nav_context = NavigationContext::new().with_globals(config.globals.clone());
-        let template_engine = TemplateEngine::new()?;
-        let action_executor = ActionExecutor::new(Arc::new(template_engine.clone()));
+        let action_executor = ActionExecutor::new(Arc::new(globals::template_engine().clone()));
 
         Ok(Self {
-            config: Arc::new(config),
             running: false,
             current_page,
             nav_stack: NavigationStack::default(),
             nav_context,
-            template_engine,
             data_cache: DataCache::new(),
             action_executor,
             current_data: Vec::new(),
@@ -92,6 +116,18 @@ impl App {
             action_confirm: None,
             action_message: None,
             last_refresh: std::time::Instant::now(),
+            stream_active: false,
+            stream_paused: false,
+            stream_buffer: VecDeque::new(),
+            stream_receiver: None,
+            stream_status: StreamStatus::Idle,
+            logs_follow: true,
+            logs_wrap: true,
+            logs_horizontal_scroll: 0,
+            logs_search_mode: false,
+            logs_search_query: String::new(),
+            logs_filter_active: false,
+            needs_clear: false,
         })
     }
 
@@ -102,7 +138,15 @@ impl App {
         self.load_current_page().await;
 
         while self.running {
+            if self.needs_clear {
+                terminal.clear()?;
+                self.needs_clear = false;
+            }
+
             terminal.draw(|frame| self.render(frame))?;
+
+            // Check for stream updates
+            self.check_stream_updates();
 
             // Check for auto-refresh
             self.check_auto_refresh().await;
@@ -123,7 +167,10 @@ impl App {
         self.loading = true;
         self.error_message = None;
 
-        let page = match self.config.pages.get(&self.current_page) {
+        // Stop any active stream from previous page
+        self.stop_stream();
+
+        let page = match globals::config().pages.get(&self.current_page).cloned() {
             Some(p) => p,
             None => {
                 self.error_message = Some(format!("Page not found: {}", self.current_page));
@@ -132,8 +179,22 @@ impl App {
             }
         };
 
-        // Fetch data
-        match self.fetch_page_data(page).await {
+        // Check if this is a stream data source
+        if let crate::config::DataSource::SingleOrStream(crate::config::SingleOrStream::Stream(_)) =
+            &page.data
+        {
+            // Start streaming
+            if let Err(e) = self.start_stream(&page).await {
+                self.error_message = Some(format!("Failed to start stream: {}", e));
+                self.loading = false;
+            } else {
+                self.loading = false;
+            }
+            return;
+        }
+
+        // Fetch data for non-stream sources
+        match self.fetch_page_data(&page).await {
             Ok(data) => {
                 self.current_data = data;
                 self.apply_sort_and_filter();
@@ -151,13 +212,15 @@ impl App {
 
     async fn check_auto_refresh(&mut self) {
         // Get refresh_interval for current page
-        let page = match self.config.pages.get(&self.current_page) {
+        let page = match globals::config().pages.get(&self.current_page) {
             Some(p) => p,
             None => return,
         };
 
         let refresh_interval = match &page.data {
-            crate::config::DataSource::Single(single) => {
+            crate::config::DataSource::SingleOrStream(crate::config::SingleOrStream::Single(
+                single,
+            )) => {
                 if let Some(interval_str) = &single.refresh_interval {
                     humantime::parse_duration(interval_str).ok()
                 } else {
@@ -175,6 +238,124 @@ impl App {
         }
     }
 
+    async fn start_stream(&mut self, page: &crate::config::Page) -> Result<()> {
+        use crate::config::{DataSource, SingleOrStream};
+        use crate::data::StreamProvider;
+
+        let stream_source = match &page.data {
+            DataSource::SingleOrStream(SingleOrStream::Stream(stream)) => stream,
+            _ => return Ok(()),
+        };
+
+        // Only support CLI streaming for now
+        let command = stream_source.command.as_ref().ok_or_else(|| {
+            crate::error::TermStackError::DataProvider("Stream must have command".to_string())
+        })?;
+
+        // Render command and args with templates
+        let ctx = self.create_template_context(None);
+        let rendered_command = globals::template_engine().render_string(command, &ctx)?;
+        let rendered_args: Result<Vec<String>> = stream_source
+            .args
+            .iter()
+            .map(|arg| globals::template_engine().render_string(arg, &ctx))
+            .collect();
+        let rendered_args = rendered_args?;
+
+        // Create stream provider
+        let mut provider = StreamProvider::new(rendered_command)
+            .with_args(rendered_args)
+            .with_shell(stream_source.shell);
+
+        if let Some(working_dir) = &stream_source.working_dir {
+            provider = provider.with_working_dir(working_dir.clone());
+        }
+
+        if !stream_source.env.is_empty() {
+            provider = provider.with_env(stream_source.env.clone());
+        }
+
+        // Start streaming
+        let receiver = provider.start_stream()?;
+
+        // Update state
+        self.stream_receiver = Some(receiver);
+        self.stream_active = true;
+        self.stream_paused = false;
+        self.stream_buffer.clear();
+        self.stream_status = StreamStatus::Connected;
+        self.selected_index = 0;
+        self.scroll_offset = 0;
+        self.needs_clear = true; // Force full terminal clear on stream start
+
+        Ok(())
+    }
+
+    fn stop_stream(&mut self) {
+        if self.stream_active {
+            self.needs_clear = true;
+        }
+        self.stream_receiver = None;
+        self.stream_active = false;
+        self.stream_paused = false;
+        self.stream_status = StreamStatus::Stopped;
+    }
+
+    fn check_stream_updates(&mut self) {
+        if !self.stream_active {
+            return;
+        }
+
+        // Get buffer size limit from config
+        let page = match globals::config().pages.get(&self.current_page) {
+            Some(p) => p,
+            None => return,
+        };
+
+        let buffer_size = match &page.data {
+            crate::config::DataSource::SingleOrStream(crate::config::SingleOrStream::Stream(
+                stream,
+            )) => stream.buffer_size,
+            _ => 100,
+        };
+
+        // Check for new messages
+        if let Some(receiver) = &mut self.stream_receiver {
+            while let Ok(msg) = receiver.try_recv() {
+                match msg {
+                    StreamMessage::Connected => {
+                        self.stream_status = StreamStatus::Streaming;
+                    }
+                    StreamMessage::Data(line) => {
+                        self.stream_status = StreamStatus::Streaming;
+
+                        // Add to buffer
+                        self.stream_buffer.push_back(line);
+
+                        // Remove oldest if buffer is full
+                        while self.stream_buffer.len() > buffer_size {
+                            self.stream_buffer.pop_front();
+                        }
+
+                        // Auto-scroll to bottom if follow is enabled and not paused
+                        if self.logs_follow && !self.stream_paused {
+                            self.selected_index = self.stream_buffer.len().saturating_sub(1);
+                        }
+                    }
+                    StreamMessage::End => {
+                        self.stream_status = StreamStatus::Stopped;
+                        self.stream_active = false;
+                    }
+                    StreamMessage::Error(err) => {
+                        self.stream_status = StreamStatus::Error(err.clone());
+                        self.stream_active = false;
+                        self.error_message = Some(format!("Stream error: {}", err));
+                    }
+                }
+            }
+        }
+    }
+
     async fn fetch_page_data(&self, page: &crate::config::Page) -> Result<Vec<Value>> {
         use crate::config::DataSource;
         use crate::data::{CliProvider, DataProvider};
@@ -182,7 +363,7 @@ impl App {
         let data_source = &page.data;
 
         match data_source {
-            DataSource::Single(single) => {
+            DataSource::SingleOrStream(crate::config::SingleOrStream::Single(single)) => {
                 // Generate cache key
                 let cache_key = self.generate_cache_key(&self.current_page, single)?;
 
@@ -205,11 +386,12 @@ impl App {
 
                         // Render command and args with templates
                         let ctx = self.create_template_context(None);
-                        let rendered_command = self.template_engine.render_string(command, &ctx)?;
+                        let rendered_command =
+                            globals::template_engine().render_string(command, &ctx)?;
                         let rendered_args: Result<Vec<String>> = single
                             .args
                             .iter()
-                            .map(|arg| self.template_engine.render_string(arg, &ctx))
+                            .map(|arg| globals::template_engine().render_string(arg, &ctx))
                             .collect();
                         let rendered_args = rendered_args?;
 
@@ -257,6 +439,11 @@ impl App {
             DataSource::Multi(_) => Err(crate::error::TermStackError::DataProvider(
                 "Multi-source not yet implemented".to_string(),
             )),
+            DataSource::SingleOrStream(crate::config::SingleOrStream::Stream(_)) => {
+                // Stream sources don't use fetch_page_data
+                // They will be handled separately with streaming infrastructure
+                Ok(Vec::new())
+            }
         }
     }
 
@@ -270,12 +457,12 @@ impl App {
 
         let empty_string = String::new();
         let command = source.command.as_ref().unwrap_or(&empty_string);
-        let rendered_command = self.template_engine.render_string(command, &ctx)?;
+        let rendered_command = globals::template_engine().render_string(command, &ctx)?;
 
         let rendered_args: Result<Vec<String>> = source
             .args
             .iter()
-            .map(|arg| self.template_engine.render_string(arg, &ctx))
+            .map(|arg| globals::template_engine().render_string(arg, &ctx))
             .collect();
         let rendered_args = rendered_args?;
 
@@ -333,7 +520,7 @@ impl App {
             return;
         }
 
-        // Handle search mode
+        // Handle search mode (for tables)
         if self.search_mode {
             match key.code {
                 KeyCode::Char(c) => {
@@ -344,8 +531,43 @@ impl App {
                     self.backspace_search_query();
                     return;
                 }
-                KeyCode::Esc | KeyCode::Enter => {
+                KeyCode::Enter => {
+                    // Exit search mode but keep the filter active
                     self.toggle_search_mode();
+                    return;
+                }
+                KeyCode::Esc => {
+                    // Clear search and exit search mode
+                    self.clear_search();
+                    self.toggle_search_mode();
+                    return;
+                }
+                _ => return,
+            }
+        }
+
+        // Handle logs search mode
+        if self.logs_search_mode {
+            match key.code {
+                KeyCode::Char(c) => {
+                    self.logs_search_query.push(c);
+                    return;
+                }
+                KeyCode::Backspace => {
+                    self.logs_search_query.pop();
+                    return;
+                }
+                KeyCode::Enter => {
+                    // Exit search mode and activate filter
+                    self.logs_search_mode = false;
+                    self.logs_filter_active = !self.logs_search_query.is_empty();
+                    return;
+                }
+                KeyCode::Esc => {
+                    // Clear search and exit search mode
+                    self.logs_search_query.clear();
+                    self.logs_filter_active = false;
+                    self.logs_search_mode = false;
                     return;
                 }
                 _ => return,
@@ -360,15 +582,14 @@ impl App {
         // Normal key handling
         match key.code {
             KeyCode::Char('q') => {
-                if self.nav_stack.is_empty() {
-                    // On start page, show confirmation
-                    self.show_quit_confirm = true;
-                } else {
-                    self.go_back().await;
-                }
+                // Always show quit confirmation
+                self.show_quit_confirm = true;
             }
             KeyCode::Esc => {
-                if !self.nav_stack.is_empty() {
+                // If search is active, clear it first
+                if !self.search_query.is_empty() {
+                    self.clear_search();
+                } else if !self.nav_stack.is_empty() {
                     self.go_back().await;
                 }
             }
@@ -377,7 +598,70 @@ impl App {
             KeyCode::Char('g') => self.move_top(),
             KeyCode::Char('G') => self.move_bottom(),
             KeyCode::Char('r') => self.load_current_page().await,
-            KeyCode::Char('/') => self.toggle_search_mode(),
+            KeyCode::Char('/') => {
+                // Toggle search mode - logs search if in stream, table search otherwise
+                if self.stream_active {
+                    self.logs_search_mode = !self.logs_search_mode;
+                } else {
+                    self.toggle_search_mode();
+                }
+            }
+            KeyCode::Char('f') => {
+                // Toggle follow in logs view
+                if self.stream_active {
+                    self.logs_follow = !self.logs_follow;
+                    if self.logs_follow {
+                        // Re-enabling follow: jump to bottom and resume
+                        self.stream_paused = false;
+                        if !self.stream_buffer.is_empty() {
+                            self.selected_index = self.stream_buffer.len() - 1;
+                        }
+                    } else {
+                        // Disabling follow: pause at current position
+                        self.stream_paused = true;
+                    }
+                }
+            }
+            KeyCode::Char('w') => {
+                // Toggle wrap in logs view
+                if self.stream_active {
+                    self.logs_wrap = !self.logs_wrap;
+                    // Reset horizontal scroll when enabling wrap
+                    if self.logs_wrap {
+                        self.logs_horizontal_scroll = 0;
+                    }
+                }
+            }
+            KeyCode::Left => {
+                // Scroll left in logs view (when wrap is off)
+                if self.stream_active && !self.logs_wrap {
+                    self.logs_horizontal_scroll = self.logs_horizontal_scroll.saturating_sub(5);
+                }
+            }
+            KeyCode::Right => {
+                // Scroll right in logs view (when wrap is off)
+                if self.stream_active && !self.logs_wrap {
+                    self.logs_horizontal_scroll = self.logs_horizontal_scroll.saturating_add(5);
+                }
+            }
+            KeyCode::Char('h') => {
+                // Scroll left in logs view (when wrap is off)
+                if self.stream_active && !self.logs_wrap {
+                    self.logs_horizontal_scroll = self.logs_horizontal_scroll.saturating_sub(5);
+                } else {
+                    // Not in scroll mode, check for action keybindings
+                    self.handle_action_key('h').await;
+                }
+            }
+            KeyCode::Char('l') => {
+                // Scroll right in logs view (when wrap is off)
+                if self.stream_active && !self.logs_wrap {
+                    self.logs_horizontal_scroll = self.logs_horizontal_scroll.saturating_add(5);
+                } else {
+                    // Not in scroll mode, check for action keybindings
+                    self.handle_action_key('l').await;
+                }
+            }
             KeyCode::Enter => self.navigate_next().await,
             KeyCode::Char(c) => {
                 // Check for action keybindings
@@ -390,7 +674,7 @@ impl App {
     async fn handle_action_key(&mut self, key: char) {
         // Find matching action and clone it to avoid borrow issues
         let action_to_execute = {
-            let page = match self.config.pages.get(&self.current_page) {
+            let page = match globals::config().pages.get(&self.current_page) {
                 Some(p) => p,
                 None => return,
             };
@@ -411,8 +695,7 @@ impl App {
             // Check if confirmation is needed
             if let Some(confirm_msg) = &action.confirm {
                 // Render confirmation message with context
-                let rendered_msg = self
-                    .template_engine
+                let rendered_msg = globals::template_engine()
                     .render_string(
                         confirm_msg,
                         &self.create_template_context(self.get_selected_row()),
@@ -512,7 +795,7 @@ impl App {
             let template_ctx = self.create_template_context(Some(row));
 
             for (key, template) in context_map {
-                match self.template_engine.render_string(&template, &template_ctx) {
+                match globals::template_engine().render_string(&template, &template_ctx) {
                     Ok(rendered) => {
                         rendered_context.insert(key, serde_json::json!(rendered));
                     }
@@ -524,9 +807,12 @@ impl App {
             }
         }
 
+        // Save current page ID before navigation
+        let source_page_id = self.current_page.clone();
+
         // Save current state to navigation stack
         let frame = NavigationFrame {
-            page_id: self.current_page.clone(),
+            page_id: source_page_id.clone(),
             context: HashMap::new(),
             scroll_offset: self.scroll_offset,
             selected_index: self.selected_index,
@@ -536,6 +822,12 @@ impl App {
         // Update navigation context with new data
         for (key, value) in rendered_context {
             self.nav_context.page_contexts.insert(key, value);
+        }
+
+        // Also store the entire selected row under the current page name
+        // This allows templates like "Pods - {{ namespaces.metadata.name }}" to work
+        if let Some(row) = selected_row {
+            self.nav_context.set_page_context(source_page_id, row);
         }
 
         // Navigate to new page
@@ -548,32 +840,82 @@ impl App {
     }
 
     fn move_down(&mut self) {
-        if self.filtered_data.is_empty() {
-            return;
-        }
-        if self.selected_index < self.filtered_data.len() - 1 {
+        let max_index = if self.stream_active || !self.stream_buffer.is_empty() {
+            // Stream mode: use buffer
+            if self.stream_buffer.is_empty() {
+                return;
+            }
+            self.stream_buffer.len() - 1
+        } else {
+            // Table mode: use filtered data
+            if self.filtered_data.is_empty() {
+                return;
+            }
+            self.filtered_data.len() - 1
+        };
+
+        if self.selected_index < max_index {
             self.selected_index += 1;
+
+            // In stream mode, check if we moved away from the bottom
+            // If we're now at the bottom, resume follow; otherwise pause it
+            if self.stream_active {
+                if self.selected_index >= self.stream_buffer.len() - 1 {
+                    // At the bottom, resume auto-follow
+                    self.stream_paused = false;
+                    self.logs_follow = true;
+                } else {
+                    // Not at bottom, pause auto-follow
+                    self.stream_paused = true;
+                    self.logs_follow = false;
+                }
+            }
         }
     }
 
     fn move_up(&mut self) {
         if self.selected_index > 0 {
             self.selected_index -= 1;
+
+            // If in stream mode and scrolling up, pause auto-follow
+            if self.stream_active {
+                self.stream_paused = true;
+                self.logs_follow = false;
+            }
         }
     }
 
     fn move_top(&mut self) {
         self.selected_index = 0;
+
+        // Pause auto-follow in stream mode
+        if self.stream_active {
+            self.stream_paused = true;
+            self.logs_follow = false;
+        }
     }
 
     fn move_bottom(&mut self) {
-        if !self.filtered_data.is_empty() {
-            self.selected_index = self.filtered_data.len() - 1;
+        if self.stream_active || !self.stream_buffer.is_empty() {
+            // Stream mode
+            if !self.stream_buffer.is_empty() {
+                self.selected_index = self.stream_buffer.len() - 1;
+                self.stream_paused = false; // Resume auto-follow when at bottom
+                self.logs_follow = true;
+            }
+        } else {
+            // Table mode
+            if !self.filtered_data.is_empty() {
+                self.selected_index = self.filtered_data.len() - 1;
+            }
         }
     }
 
     async fn go_back(&mut self) {
         if let Some(frame) = self.nav_stack.pop() {
+            // Stop any active stream before navigating back
+            self.stop_stream();
+
             self.current_page = frame.page_id;
             self.selected_index = frame.selected_index;
             self.scroll_offset = frame.scroll_offset;
@@ -582,7 +924,7 @@ impl App {
     }
 
     async fn navigate_next(&mut self) {
-        let page = match self.config.pages.get(&self.current_page) {
+        let page = match globals::config().pages.get(&self.current_page) {
             Some(p) => p,
             None => return,
         };
@@ -669,34 +1011,43 @@ impl App {
     }
 
     fn render_header(&self, frame: &mut Frame, area: Rect) {
-        let page = self.config.pages.get(&self.current_page);
-        let title = if let Some(page) = page {
-            // Try to render title template
-            let ctx = self.create_template_context(None);
-            self.template_engine
-                .render_string(&page.title, &ctx)
-                .unwrap_or_else(|_| page.title.clone())
-        } else {
-            self.current_page.clone()
-        };
-
-        let breadcrumb = if self.nav_stack.is_empty() {
-            title.clone()
-        } else {
-            format!("{} levels deep > {}", self.nav_stack.len(), title)
-        };
-
-        let header = Paragraph::new(Line::from(vec![
+        // Build breadcrumb trail from navigation stack
+        let mut spans = vec![
             Span::styled(
-                &self.config.app.name,
+                &globals::config().app.name,
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" | "),
-            Span::styled(breadcrumb, Style::default().fg(Color::Yellow)),
-        ]))
-        .block(Block::default().borders(Borders::ALL));
+        ];
+
+        // Add pages from navigation stack (if any)
+        for (idx, nav_frame) in self.nav_stack.frames().iter().enumerate() {
+            if idx > 0 {
+                spans.push(Span::raw(" > "));
+            }
+            spans.push(Span::styled(
+                &nav_frame.page_id,
+                Style::default().fg(Color::White),
+            ));
+        }
+
+        // Add separator before current page if there are previous pages
+        if !self.nav_stack.frames().is_empty() {
+            spans.push(Span::raw(" > "));
+        }
+
+        // Add current page with distinct color
+        spans.push(Span::styled(
+            &self.current_page,
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ));
+
+        let header =
+            Paragraph::new(Line::from(spans)).block(Block::default().borders(Borders::ALL));
 
         frame.render_widget(header, area);
     }
@@ -718,7 +1069,7 @@ impl App {
             return;
         }
 
-        let page = match self.config.pages.get(&self.current_page) {
+        let page = match globals::config().pages.get(&self.current_page) {
             Some(p) => p,
             None => return,
         };
@@ -728,10 +1079,34 @@ impl App {
                 let table_view = table_view.clone();
                 self.render_table(frame, area, &table_view);
             }
-            _ => {
-                let msg = Paragraph::new("View type not yet implemented")
-                    .block(Block::default().borders(Borders::ALL).title("Content"));
-                frame.render_widget(msg, area);
+            ConfigView::Logs(logs_view) => {
+                let logs_view = logs_view.clone();
+                self.render_logs(frame, area, &logs_view);
+            }
+            ConfigView::Detail(detail_view) => {
+                let detail_view = detail_view.clone();
+                self.render_detail(frame, area, &detail_view);
+            }
+            ConfigView::Yaml(_yaml_view) => {
+                let page_title = self.get_rendered_page_title();
+
+                // Display current_data as JSON (YAML view not fully implemented)
+                if self.current_data.is_empty() {
+                    let msg = Paragraph::new("No data")
+                        .block(Block::default().borders(Borders::ALL).title(page_title));
+                    frame.render_widget(msg, area);
+                } else {
+                    let json_str = serde_json::to_string_pretty(&self.current_data[0])
+                        .unwrap_or_else(|_| "Failed to serialize".to_string());
+
+                    let lines: Vec<Line> = json_str.lines().map(|line| Line::from(line)).collect();
+
+                    let content = Paragraph::new(lines)
+                        .block(Block::default().borders(Borders::ALL).title(page_title))
+                        .wrap(ratatui::widgets::Wrap { trim: false });
+
+                    frame.render_widget(content, area);
+                }
             }
         }
     }
@@ -742,9 +1117,12 @@ impl App {
         area: Rect,
         table_config: &crate::config::TableView,
     ) {
+        // Get the rendered page title
+        let page_title = self.get_rendered_page_title();
+
         if self.filtered_data.is_empty() {
             let empty = Paragraph::new("No data")
-                .block(Block::default().borders(Borders::ALL).title("Table"));
+                .block(Block::default().borders(Borders::ALL).title(page_title));
             frame.render_widget(empty, area);
             return;
         }
@@ -780,7 +1158,7 @@ impl App {
                                 // Apply transform if present
                                 if let Some(transform) = &col.transform {
                                     let row_ctx = self.create_template_context(Some(&value));
-                                    self.template_engine
+                                    globals::template_engine()
                                         .render_string(transform, &row_ctx)
                                         .unwrap_or_else(|_| value_to_string(&value))
                                 } else {
@@ -824,21 +1202,376 @@ impl App {
 
         let table = Table::new(rows, widths)
             .header(header)
-            .block(Block::default().borders(Borders::ALL).title("Table"))
+            .block(Block::default().borders(Borders::ALL).title(page_title))
             .row_highlight_style(Style::default().bg(Color::DarkGray));
 
         frame.render_widget(table, area);
     }
 
+    fn render_detail(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        detail_config: &crate::config::schema::DetailView,
+    ) {
+        let page_title = self.get_rendered_page_title();
+
+        if self.current_data.is_empty() {
+            let empty = Paragraph::new("No data")
+                .block(Block::default().borders(Borders::ALL).title(page_title));
+            frame.render_widget(empty, area);
+            return;
+        }
+
+        let item = &self.current_data[0];
+        let mut lines = Vec::new();
+
+        // Render sections if defined
+        if !detail_config.sections.is_empty() {
+            for section in &detail_config.sections {
+                // Section title
+                lines.push(Line::from(vec![Span::styled(
+                    format!("─── {} ", section.title),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )]));
+                lines.push(Line::from(""));
+
+                // Section fields
+                for (label, json_path) in &section.fields {
+                    if let Ok(extractor) = JsonPathExtractor::new(json_path) {
+                        if let Ok(Some(value)) = extractor.extract_single(item) {
+                            let value_str = value_to_string(&value);
+                            lines.push(Line::from(vec![
+                                Span::styled(
+                                    format!("  {}: ", label),
+                                    Style::default()
+                                        .fg(Color::Yellow)
+                                        .add_modifier(Modifier::BOLD),
+                                ),
+                                Span::raw(value_str),
+                            ]));
+                        }
+                    }
+                }
+                lines.push(Line::from(""));
+            }
+        } else if !detail_config.fields.is_empty() {
+            // Render flat fields if no sections
+            for (label, json_path) in &detail_config.fields {
+                if let Ok(extractor) = JsonPathExtractor::new(json_path) {
+                    if let Ok(Some(value)) = extractor.extract_single(item) {
+                        let value_str = value_to_string(&value);
+                        lines.push(Line::from(vec![
+                            Span::styled(
+                                format!("{}: ", label),
+                                Style::default()
+                                    .fg(Color::Yellow)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                            Span::raw(value_str),
+                        ]));
+                    }
+                }
+            }
+        }
+
+        let detail = Paragraph::new(lines)
+            .block(Block::default().borders(Borders::ALL).title(page_title))
+            .wrap(ratatui::widgets::Wrap { trim: false });
+
+        frame.render_widget(detail, area);
+    }
+
+    /// Parse ANSI escape codes in text and convert to ratatui Line with styles
+    fn parse_ansi_line(&self, text: &str) -> Line<'static> {
+        use ansi_to_tui::IntoText;
+        match text.into_text() {
+            Ok(parsed_text) => {
+                // Convert Text to Line - take first line or empty
+                if parsed_text.lines.is_empty() {
+                    Line::from(text.to_string())
+                } else {
+                    parsed_text.lines[0].clone()
+                }
+            }
+            Err(_) => {
+                // Fallback: return plain text if parsing fails
+                Line::from(text.to_string())
+            }
+        }
+    }
+
+    fn render_logs(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        _logs_config: &crate::config::schema::LogsView,
+    ) {
+        // Get the rendered page title
+        let page_title = self.get_rendered_page_title();
+
+        // For streaming logs, render from stream buffer
+        if self.stream_active || !self.stream_buffer.is_empty() {
+            if self.stream_buffer.is_empty() {
+                let empty = Paragraph::new("Waiting for data...")
+                    .style(Style::default().fg(Color::Yellow))
+                    .block(Block::default().borders(Borders::ALL).title(page_title));
+                frame.render_widget(empty, area);
+                return;
+            }
+
+            // Filter logs if search is active
+            let filtered_indices: Vec<usize> =
+                if self.logs_filter_active && !self.logs_search_query.is_empty() {
+                    // Create regex for filtering
+                    let pattern = if self.logs_search_query.starts_with('!') {
+                        // Inverse filter
+                        let query = &self.logs_search_query[1..];
+                        self.stream_buffer
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, line)| {
+                                if let Ok(re) =
+                                    regex::Regex::new(&format!("(?i){}", regex::escape(query)))
+                                {
+                                    !re.is_match(line)
+                                } else {
+                                    true // If regex fails, include all
+                                }
+                            })
+                            .map(|(idx, _)| idx)
+                            .collect()
+                    } else {
+                        // Normal filter
+                        self.stream_buffer
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, line)| {
+                                if let Ok(re) = regex::Regex::new(&format!(
+                                    "(?i){}",
+                                    regex::escape(&self.logs_search_query)
+                                )) {
+                                    re.is_match(line)
+                                } else {
+                                    false
+                                }
+                            })
+                            .map(|(idx, _)| idx)
+                            .collect()
+                    };
+                    pattern
+                } else {
+                    // No filter, use all indices
+                    (0..self.stream_buffer.len()).collect()
+                };
+
+            // Calculate visible area
+            let visible_height = area.height.saturating_sub(2) as usize; // Account for borders
+
+            // When follow is enabled, ensure we stay at the bottom of the buffer
+            if self.logs_follow && !self.stream_paused {
+                if !self.stream_buffer.is_empty() {
+                    self.selected_index = self.stream_buffer.len() - 1;
+                }
+            }
+
+            // Ensure selected_index is within bounds of the actual buffer
+            if !self.stream_buffer.is_empty() {
+                self.selected_index = self.selected_index.min(self.stream_buffer.len() - 1);
+            }
+
+            // Find the position of selected_index in the filtered list
+            let selected_filter_pos = filtered_indices
+                .iter()
+                .position(|&idx| idx == self.selected_index)
+                .unwrap_or(filtered_indices.len().saturating_sub(1));
+
+            // Calculate scroll position based on filtered results
+            let total_lines = filtered_indices.len();
+            let mut start_line = selected_filter_pos.saturating_sub(visible_height / 2);
+
+            // Adjust if at the end
+            if selected_filter_pos + visible_height / 2 >= total_lines {
+                start_line = total_lines.saturating_sub(visible_height);
+            }
+
+            let _end_line = (start_line + visible_height).min(total_lines);
+
+            // Build visible lines with optional timestamps and wrapping
+            let content_width = area.width.saturating_sub(4) as usize; // Account for borders and padding
+            let mut lines: Vec<Line> = Vec::new();
+
+            for i in start_line..total_lines.min(start_line + visible_height) {
+                // When wrapping is disabled, limit the number of lines to visible height
+                // When wrapping is enabled, don't limit since lines may wrap to multiple rows
+                if !self.logs_wrap && lines.len() >= visible_height {
+                    break;
+                }
+
+                let actual_idx = filtered_indices[i];
+                let line = &self.stream_buffer[actual_idx];
+                let display_line = line.clone();
+
+                // Parse ANSI codes to preserve colors
+                let mut parsed_line = self.parse_ansi_line(&display_line);
+
+                // Apply selection highlighting if this is the selected line
+                if actual_idx == self.selected_index {
+                    // Add background to all spans in the line
+                    for span in &mut parsed_line.spans {
+                        span.style = span.style.bg(Color::DarkGray).add_modifier(Modifier::BOLD);
+                    }
+                }
+
+                // Handle wrapping if enabled
+                if self.logs_wrap {
+                    // For wrapping, we need to handle line width
+                    let line_width: usize = parsed_line.spans.iter().map(|s| s.content.len()).sum();
+
+                    if line_width > content_width {
+                        // TODO: Proper wrapping with ANSI styles is complex
+                        // For now, just push the line and let Paragraph wrap it
+                        lines.push(parsed_line);
+                    } else {
+                        lines.push(parsed_line);
+                    }
+                } else {
+                    // Single line with horizontal scroll support
+                    if !self.logs_wrap && display_line.len() > content_width {
+                        // Apply horizontal scroll offset
+                        let start = self.logs_horizontal_scroll.min(display_line.len());
+                        let end = (start + content_width).min(display_line.len());
+                        let slice = &display_line[start..end];
+
+                        // Add indicators for horizontal scroll
+                        let left_indicator = if self.logs_horizontal_scroll > 0 {
+                            "< "
+                        } else {
+                            ""
+                        };
+                        let right_indicator = if end < display_line.len() { " >" } else { "" };
+
+                        let visible_line =
+                            format!("{}{}{}", left_indicator, slice, right_indicator);
+                        let mut scrolled_line = self.parse_ansi_line(&visible_line);
+
+                        if actual_idx == self.selected_index {
+                            for span in &mut scrolled_line.spans {
+                                span.style =
+                                    span.style.bg(Color::DarkGray).add_modifier(Modifier::BOLD);
+                            }
+                        }
+                        lines.push(scrolled_line);
+                    } else {
+                        lines.push(parsed_line);
+                    }
+                }
+            }
+
+            // Add stream status indicator to title
+            let mut title_parts = vec![];
+
+            // Add base title
+            title_parts.push(page_title);
+
+            // Add stream status
+            let status_str = match &self.stream_status {
+                StreamStatus::Streaming if !self.stream_paused => " ● LIVE",
+                StreamStatus::Streaming if self.stream_paused => " ⏸ PAUSED",
+                StreamStatus::Stopped => " ⏹ STOPPED",
+                StreamStatus::Error(err) => {
+                    title_parts.push(format!(" ✗ ERROR: {}", err));
+                    ""
+                }
+                _ => "",
+            };
+            if !status_str.is_empty() {
+                title_parts.push(status_str.to_string());
+            }
+
+            // Add settings indicators
+            let mut settings = vec![];
+            if self.logs_follow {
+                settings.push("F");
+            }
+            if self.logs_wrap {
+                settings.push("W");
+            }
+            if !settings.is_empty() {
+                title_parts.push(format!(" [{}]", settings.join("")));
+            }
+
+            // Add search status
+            if self.logs_search_mode {
+                title_parts.push(format!(" Search: {}_", self.logs_search_query));
+            } else if self.logs_filter_active && !self.logs_search_query.is_empty() {
+                title_parts.push(format!(
+                    " Filter: {} ({}/{})",
+                    self.logs_search_query,
+                    filtered_indices.len(),
+                    self.stream_buffer.len()
+                ));
+            }
+
+            let title_with_status = title_parts.join("");
+
+            let mut logs = Paragraph::new(lines).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(title_with_status),
+            );
+
+            // Enable wrapping if configured
+            if self.logs_wrap {
+                logs = logs.wrap(ratatui::widgets::Wrap { trim: false });
+            }
+
+            frame.render_widget(logs, area);
+        } else {
+            // Non-streaming logs view (not implemented yet)
+            let msg = Paragraph::new("Non-streaming logs not yet implemented")
+                .style(Style::default().fg(Color::Yellow))
+                .block(Block::default().borders(Borders::ALL).title(page_title));
+            frame.render_widget(msg, area);
+        }
+    }
+
+    fn get_rendered_page_title(&self) -> String {
+        // Get current page config
+        let page = match globals::config().pages.get(&self.current_page) {
+            Some(p) => p,
+            None => return self.current_page.clone(), // Fallback to page ID
+        };
+
+        // Render the page title with template context
+        let ctx = self.create_template_context(None);
+        globals::template_engine()
+            .render_string(&page.title, &ctx)
+            .unwrap_or_else(|_| page.title.clone())
+    }
+
     fn render_statusbar(&self, frame: &mut Frame, area: Rect) {
         // Build navigation shortcuts (always shown)
-        let nav_shortcuts = if self.current_data.is_empty() {
+        let nav_shortcuts = if self.stream_active && !self.logs_wrap {
+            "j/k: Scroll  |  h/l: Side-scroll  |  g/G: Top/Bottom  |  /: Search  |  f: Follow  |  w: Wrap  |  ESC: Back  |  q: Quit"
+        } else if self.stream_active {
+            "j/k: Scroll  |  g/G: Top/Bottom  |  /: Search  |  f: Follow  |  w: Wrap  |  ESC: Back  |  q: Quit"
+        } else if self.current_data.is_empty() {
             "q/ESC: Quit  |  r: Refresh"
         } else {
             "j/k: Move  |  g/G: Top/Bottom  |  Enter: Select  |  ESC: Back  |  r: Refresh  |  q: Quit"
         };
 
-        let row_info = if self.search_mode {
+        let row_info = if self.stream_active {
+            format!(
+                "Lines: {} | Line {}/{}",
+                self.stream_buffer.len(),
+                self.selected_index + 1,
+                self.stream_buffer.len()
+            )
+        } else if self.search_mode {
             format!(
                 "Search: {} | {}/{}",
                 self.search_query,
@@ -873,7 +1606,7 @@ impl App {
         ]);
 
         // Build action shortcuts (if available)
-        let action_line = if let Some(page) = self.config.pages.get(&self.current_page) {
+        let action_line = if let Some(page) = globals::config().pages.get(&self.current_page) {
             if let Some(actions) = &page.actions {
                 if !actions.is_empty() {
                     let action_shortcuts: Vec<Span> = actions
@@ -918,6 +1651,7 @@ impl App {
 
     fn render_action_message(&self, frame: &mut Frame, area: Rect, msg: &ActionMessage) {
         use ratatui::layout::Alignment;
+        use ratatui::widgets::Clear;
 
         let color = if msg.is_error {
             Color::Red
@@ -951,6 +1685,9 @@ impl App {
             height: msg_height,
         };
 
+        // Clear the background area to hide content behind
+        frame.render_widget(Clear, msg_area);
+
         // Build the message text with wrapped lines
         let mut message_lines = vec![Line::from("")]; // Top padding
         for line in wrapped_lines {
@@ -966,6 +1703,7 @@ impl App {
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(color))
+                    .style(Style::default().bg(Color::Black))
                     .title(if msg.is_error { "Error" } else { "Success" }),
             )
             .alignment(Alignment::Center)
@@ -1023,6 +1761,7 @@ impl App {
 
     fn render_action_confirm(&self, frame: &mut Frame, area: Rect, confirm: &ActionConfirm) {
         use ratatui::layout::Alignment;
+        use ratatui::widgets::Clear;
 
         // Create a centered popup
         let popup_width = 60.min(area.width.saturating_sub(4));
@@ -1037,9 +1776,8 @@ impl App {
             height: popup_height,
         };
 
-        // Clear the background
-        let clear_block = Block::default().style(Style::default().bg(Color::Black));
-        frame.render_widget(clear_block, popup_area);
+        // Clear the background area to hide content behind
+        frame.render_widget(Clear, popup_area);
 
         // Render the confirmation dialog
         let dialog_text = vec![
@@ -1065,6 +1803,7 @@ impl App {
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(Color::Yellow))
+                    .style(Style::default().bg(Color::Black))
                     .title("Confirm Action"),
             )
             .alignment(Alignment::Center);
@@ -1074,6 +1813,7 @@ impl App {
 
     fn render_quit_confirm(&self, frame: &mut Frame, area: Rect) {
         use ratatui::layout::Alignment;
+        use ratatui::widgets::Clear;
 
         // Create a centered popup
         let popup_width = 50;
@@ -1088,9 +1828,8 @@ impl App {
             height: popup_height,
         };
 
-        // Clear the background
-        let clear_block = Block::default().style(Style::default().bg(Color::Black));
-        frame.render_widget(clear_block, popup_area);
+        // Clear the background area to hide content behind
+        frame.render_widget(Clear, popup_area);
 
         // Render the confirmation dialog
         let dialog_text = vec![
@@ -1111,6 +1850,7 @@ impl App {
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(Color::Yellow))
+                    .style(Style::default().bg(Color::Black))
                     .title("Confirm"),
             )
             .alignment(Alignment::Center);
@@ -1128,7 +1868,7 @@ impl App {
         }
 
         // Apply sorting if configured
-        if let Some(page) = self.config.pages.get(&self.current_page) {
+        if let Some(page) = globals::config().pages.get(&self.current_page) {
             if let ConfigView::Table(table_view) = &page.view {
                 if let Some(sort_config) = &table_view.sort {
                     data = self.sort_data(&data, sort_config);

@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use reqwest::{Client, Method};
+use reqwest::Method;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -7,6 +7,7 @@ use std::time::Duration;
 use super::provider::{DataContext, DataProvider};
 use crate::config::HttpMethod;
 use crate::error::{Result, TermStackError};
+use crate::globals;
 
 /// HTTP data provider
 #[derive(Debug, Clone)]
@@ -53,12 +54,7 @@ impl HttpProvider {
 #[async_trait]
 impl DataProvider for HttpProvider {
     async fn fetch(&self, _context: &DataContext) -> Result<Value> {
-        let client = Client::builder()
-            .timeout(self.timeout)
-            .build()
-            .map_err(|e| {
-                TermStackError::DataProvider(format!("Failed to create HTTP client: {}", e))
-            })?;
+        let client = globals::http_client();
 
         let method = match self.method {
             HttpMethod::GET => Method::GET,

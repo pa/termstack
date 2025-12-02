@@ -2,6 +2,7 @@ pub mod action;
 pub mod app;
 pub mod config;
 pub mod data;
+pub mod globals;
 pub mod input;
 pub mod navigation;
 pub mod template;

@@ -62,6 +62,10 @@ impl NavigationStack {
     pub fn is_empty(&self) -> bool {
         self.frames.is_empty()
     }
+
+    pub fn frames(&self) -> &[NavigationFrame] {
+        &self.frames
+    }
 }
 
 impl Default for NavigationStack {

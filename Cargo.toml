@@ -36,6 +36,8 @@ chrono = "0.4"
 humantime = "2"
 humansize = "2"
 tui-input = "0.10"
+regex = "1"
+ansi-to-tui = "7"
 
 # Phase 2 - commented out for now
 # mlua = { version = "0.9", features = ["lua54", "async"] }
