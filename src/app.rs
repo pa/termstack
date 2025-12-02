@@ -20,6 +20,119 @@ use crate::{
     navigation::{NavigationContext, NavigationFrame, NavigationStack},
     template::engine::TemplateContext,
 };
+use regex::Regex;
+
+/// Global search state that works across all views
+#[derive(Debug, Clone)]
+struct GlobalSearch {
+    /// Whether search input is active
+    active: bool,
+    /// The search query string
+    query: String,
+    /// Whether the filter is applied (search was confirmed)
+    filter_active: bool,
+    /// Compiled regex pattern (cached)
+    regex_pattern: Option<Regex>,
+    /// Whether to use case-sensitive search
+    case_sensitive: bool,
+}
+
+impl Default for GlobalSearch {
+    fn default() -> Self {
+        Self {
+            active: false,
+            query: String::new(),
+            filter_active: false,
+            regex_pattern: None,
+            case_sensitive: false,
+        }
+    }
+}
+
+impl GlobalSearch {
+    /// Compile the query into a regex pattern
+    fn compile_pattern(&mut self) {
+        if self.query.is_empty() {
+            self.regex_pattern = None;
+            return;
+        }
+
+        // Check if query starts with '!' for regex mode
+        let pattern_str = if self.query.starts_with('!') {
+            // Regex mode: use query after '!'
+            self.query[1..].to_string()
+        } else {
+            // Literal mode: escape special regex characters
+            regex::escape(&self.query)
+        };
+
+        // Build regex with case sensitivity
+        let regex_result = if self.case_sensitive {
+            Regex::new(&pattern_str)
+        } else {
+            Regex::new(&format!("(?i){}", pattern_str))
+        };
+
+        self.regex_pattern = regex_result.ok();
+    }
+
+    /// Test if a string matches the search pattern
+    fn matches(&self, text: &str) -> bool {
+        if !self.filter_active || self.query.is_empty() {
+            return true; // No filter, everything matches
+        }
+
+        match &self.regex_pattern {
+            Some(regex) => regex.is_match(text),
+            None => true, // Invalid regex, show everything
+        }
+    }
+
+    /// Activate search mode
+    fn activate(&mut self) {
+        self.active = true;
+    }
+
+    /// Deactivate and apply filter
+    fn apply(&mut self) {
+        self.active = false;
+        self.filter_active = !self.query.is_empty();
+        self.compile_pattern();
+    }
+
+    /// Cancel search without applying
+    fn cancel(&mut self) {
+        self.active = false;
+        self.query.clear();
+        self.filter_active = false;
+        self.regex_pattern = None;
+    }
+
+    /// Clear the search filter
+    fn clear(&mut self) {
+        self.query.clear();
+        self.filter_active = false;
+        self.regex_pattern = None;
+    }
+
+    /// Add character to query
+    fn push_char(&mut self, c: char) {
+        self.query.push(c);
+    }
+
+    /// Remove last character from query
+    fn pop_char(&mut self) {
+        self.query.pop();
+    }
+
+    /// Toggle case sensitivity
+    fn toggle_case_sensitive(&mut self) {
+        self.case_sensitive = !self.case_sensitive;
+        if self.filter_active {
+            self.compile_pattern();
+        }
+    }
+}
 
 pub struct App {
     running: bool,
@@ -37,9 +150,8 @@ pub struct App {
     loading: bool,
     error_message: Option<String>,
 
-    // Search/filter state
-    search_mode: bool,
-    search_query: String,
+    // Global search (works across all views)
+    global_search: GlobalSearch,
 
     // Confirmation dialogs
     show_quit_confirm: bool,
@@ -62,9 +174,6 @@ pub struct App {
     logs_follow: bool,
     logs_wrap: bool,
     logs_horizontal_scroll: usize,
-    logs_search_mode: bool,
-    logs_search_query: String,
-    logs_filter_active: bool,
 
     // UI state
     needs_clear: bool,
@@ -110,8 +219,7 @@ impl App {
             scroll_offset: 0,
             loading: false,
             error_message: None,
-            search_mode: false,
-            search_query: String::new(),
+            global_search: GlobalSearch::default(),
             show_quit_confirm: false,
             action_confirm: None,
             action_message: None,
@@ -124,9 +232,6 @@ impl App {
             logs_follow: true,
             logs_wrap: true,
             logs_horizontal_scroll: 0,
-            logs_search_mode: false,
-            logs_search_query: String::new(),
-            logs_filter_active: false,
             needs_clear: false,
         })
     }
@@ -520,54 +625,45 @@ impl App {
             return;
         }
 
-        // Handle search mode (for tables)
-        if self.search_mode {
+        // Handle global search mode
+        if self.global_search.active {
             match key.code {
+                KeyCode::Char(c)
+                    if c == 'C'
+                        && key
+                            .modifiers
+                            .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                {
+                    // Ctrl+C: Toggle case sensitivity
+                    self.global_search.toggle_case_sensitive();
+                    return;
+                }
                 KeyCode::Char(c) => {
-                    self.update_search_query(c);
+                    self.global_search.push_char(c);
                     return;
                 }
                 KeyCode::Backspace => {
-                    self.backspace_search_query();
+                    self.global_search.pop_char();
                     return;
                 }
                 KeyCode::Enter => {
-                    // Exit search mode but keep the filter active
-                    self.toggle_search_mode();
+                    // Apply the search filter
+                    self.global_search.apply();
+                    // Re-filter the data for table views
+                    if !self.stream_active {
+                        self.apply_sort_and_filter();
+                        self.selected_index = 0;
+                    }
                     return;
                 }
                 KeyCode::Esc => {
-                    // Clear search and exit search mode
-                    self.clear_search();
-                    self.toggle_search_mode();
-                    return;
-                }
-                _ => return,
-            }
-        }
-
-        // Handle logs search mode
-        if self.logs_search_mode {
-            match key.code {
-                KeyCode::Char(c) => {
-                    self.logs_search_query.push(c);
-                    return;
-                }
-                KeyCode::Backspace => {
-                    self.logs_search_query.pop();
-                    return;
-                }
-                KeyCode::Enter => {
-                    // Exit search mode and activate filter
-                    self.logs_search_mode = false;
-                    self.logs_filter_active = !self.logs_search_query.is_empty();
-                    return;
-                }
-                KeyCode::Esc => {
-                    // Clear search and exit search mode
-                    self.logs_search_query.clear();
-                    self.logs_filter_active = false;
-                    self.logs_search_mode = false;
+                    // Cancel search and clear filter
+                    self.global_search.cancel();
+                    // Re-filter the data for table views
+                    if !self.stream_active {
+                        self.apply_sort_and_filter();
+                        self.selected_index = 0;
+                    }
                     return;
                 }
                 _ => return,
@@ -586,9 +682,14 @@ impl App {
                 self.show_quit_confirm = true;
             }
             KeyCode::Esc => {
-                // If search is active, clear it first
-                if !self.search_query.is_empty() {
-                    self.clear_search();
+                // If search filter is active, clear it first
+                if self.global_search.filter_active {
+                    self.global_search.clear();
+                    // Re-filter the data for table views
+                    if !self.stream_active {
+                        self.apply_sort_and_filter();
+                        self.selected_index = 0;
+                    }
                 } else if !self.nav_stack.is_empty() {
                     self.go_back().await;
                 }
@@ -599,12 +700,8 @@ impl App {
             KeyCode::Char('G') => self.move_bottom(),
             KeyCode::Char('r') => self.load_current_page().await,
             KeyCode::Char('/') => {
-                // Toggle search mode - logs search if in stream, table search otherwise
-                if self.stream_active {
-                    self.logs_search_mode = !self.logs_search_mode;
-                } else {
-                    self.toggle_search_mode();
-                }
+                // Activate global search
+                self.global_search.activate();
             }
             KeyCode::Char('f') => {
                 // Toggle follow in logs view
@@ -975,6 +1072,9 @@ impl App {
                 .set_page_context(self.current_page.clone(), selected_row.clone());
         }
 
+        // Clear search when navigating to next page
+        self.global_search.clear();
+
         // Navigate to next page
         self.current_page = next_page.clone();
         self.load_current_page().await;
@@ -983,10 +1083,17 @@ impl App {
     fn render(&mut self, frame: &mut Frame) {
         let area = frame.area();
 
+        // Dynamically adjust header size based on search state
+        let header_height = if self.global_search.active {
+            6 // Breadcrumb + search input
+        } else {
+            3 // Just breadcrumb (with inline filter tag if active)
+        };
+
         let chunks = Layout::vertical([
-            Constraint::Length(3), // Header
-            Constraint::Min(0),    // Content
-            Constraint::Length(4), // Status bar (now 2 lines + border)
+            Constraint::Length(header_height), // Header
+            Constraint::Min(0),                // Content
+            Constraint::Length(4),             // Status bar
         ])
         .split(area);
 
@@ -1011,7 +1118,28 @@ impl App {
     }
 
     fn render_header(&self, frame: &mut Frame, area: Rect) {
-        // Build breadcrumb trail from navigation stack
+        // Only show search input if actively typing
+        if self.global_search.active {
+            let header_chunks = Layout::default()
+                .direction(ratatui::layout::Direction::Vertical)
+                .constraints([
+                    Constraint::Length(3), // Breadcrumb with filter tag
+                    Constraint::Length(3), // Search input
+                ])
+                .split(area);
+
+            // Render breadcrumb
+            self.render_breadcrumb(frame, header_chunks[0]);
+
+            // Render search input
+            self.render_search_input(frame, header_chunks[1]);
+        } else {
+            // Just show breadcrumb (with filter tag if active)
+            self.render_breadcrumb(frame, area);
+        }
+    }
+
+    fn render_breadcrumb(&self, frame: &mut Frame, area: Rect) {
         let mut spans = vec![
             Span::styled(
                 &globals::config().app.name,
@@ -1048,8 +1176,44 @@ impl App {
 
         let header =
             Paragraph::new(Line::from(spans)).block(Block::default().borders(Borders::ALL));
-
         frame.render_widget(header, area);
+    }
+
+    fn render_search_input(&self, frame: &mut Frame, area: Rect) {
+        // Only renders during active input
+        let search_text = format!("{}_", self.global_search.query);
+
+        let case_indicator = if self.global_search.case_sensitive {
+            " [Case-sensitive]"
+        } else {
+            ""
+        };
+
+        let mode_indicator = if self.global_search.query.starts_with('!') {
+            " (Regex)"
+        } else {
+            " (Literal)"
+        };
+
+        let title = format!(
+            "Search{}{} - Enter to apply, Esc to cancel",
+            mode_indicator, case_indicator
+        );
+
+        let search_input = Paragraph::new(search_text)
+            .style(
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(title)
+                    .border_style(Style::default().fg(Color::Yellow)),
+            );
+
+        frame.render_widget(search_input, area);
     }
 
     fn render_content(&mut self, frame: &mut Frame, area: Rect) {
@@ -1322,50 +1486,18 @@ impl App {
                 return;
             }
 
-            // Filter logs if search is active
-            let filtered_indices: Vec<usize> =
-                if self.logs_filter_active && !self.logs_search_query.is_empty() {
-                    // Create regex for filtering
-                    let pattern = if self.logs_search_query.starts_with('!') {
-                        // Inverse filter
-                        let query = &self.logs_search_query[1..];
-                        self.stream_buffer
-                            .iter()
-                            .enumerate()
-                            .filter(|(_, line)| {
-                                if let Ok(re) =
-                                    regex::Regex::new(&format!("(?i){}", regex::escape(query)))
-                                {
-                                    !re.is_match(line)
-                                } else {
-                                    true // If regex fails, include all
-                                }
-                            })
-                            .map(|(idx, _)| idx)
-                            .collect()
-                    } else {
-                        // Normal filter
-                        self.stream_buffer
-                            .iter()
-                            .enumerate()
-                            .filter(|(_, line)| {
-                                if let Ok(re) = regex::Regex::new(&format!(
-                                    "(?i){}",
-                                    regex::escape(&self.logs_search_query)
-                                )) {
-                                    re.is_match(line)
-                                } else {
-                                    false
-                                }
-                            })
-                            .map(|(idx, _)| idx)
-                            .collect()
-                    };
-                    pattern
-                } else {
-                    // No filter, use all indices
-                    (0..self.stream_buffer.len()).collect()
-                };
+            // Filter logs using global search if active
+            let filtered_indices: Vec<usize> = if self.global_search.filter_active {
+                self.stream_buffer
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, line)| self.global_search.matches(line))
+                    .map(|(idx, _)| idx)
+                    .collect()
+            } else {
+                // No filter, use all indices
+                (0..self.stream_buffer.len()).collect()
+            };
 
             // Calculate visible area
             let visible_height = area.height.saturating_sub(2) as usize; // Account for borders
@@ -1503,13 +1635,10 @@ impl App {
                 title_parts.push(format!(" [{}]", settings.join("")));
             }
 
-            // Add search status
-            if self.logs_search_mode {
-                title_parts.push(format!(" Search: {}_", self.logs_search_query));
-            } else if self.logs_filter_active && !self.logs_search_query.is_empty() {
+            // Add filter count if search is active
+            if self.global_search.filter_active {
                 title_parts.push(format!(
-                    " Filter: {} ({}/{})",
-                    self.logs_search_query,
+                    " ({}/{})",
                     filtered_indices.len(),
                     self.stream_buffer.len()
                 ));
@@ -1547,9 +1676,28 @@ impl App {
 
         // Render the page title with template context
         let ctx = self.create_template_context(None);
-        globals::template_engine()
+        let mut title = globals::template_engine()
             .render_string(&page.title, &ctx)
-            .unwrap_or_else(|_| page.title.clone())
+            .unwrap_or_else(|_| page.title.clone());
+
+        // Add search filter tag if active (but not during input)
+        if self.global_search.filter_active && !self.global_search.active {
+            let filter_display = if self.global_search.query.len() > 25 {
+                format!("{}...", &self.global_search.query[..22])
+            } else {
+                self.global_search.query.clone()
+            };
+
+            let mode_indicator = if self.global_search.query.starts_with('!') {
+                "~/" // regex
+            } else {
+                "" // literal
+            };
+
+            title = format!("{} | 🔍 {}{}", title, mode_indicator, filter_display);
+        }
+
+        title
     }
 
     fn render_statusbar(&self, frame: &mut Frame, area: Rect) {
@@ -1571,14 +1719,7 @@ impl App {
                 self.selected_index + 1,
                 self.stream_buffer.len()
             )
-        } else if self.search_mode {
-            format!(
-                "Search: {} | {}/{}",
-                self.search_query,
-                self.selected_index + 1,
-                self.filtered_data.len()
-            )
-        } else if !self.search_query.is_empty() {
+        } else if self.global_search.filter_active {
             format!(
                 "Filtered: {}/{} | Row {}/{}",
                 self.filtered_data.len(),
@@ -1862,8 +2003,8 @@ impl App {
         // Start with all data
         let mut data = self.current_data.clone();
 
-        // Apply search filter if active
-        if !self.search_query.is_empty() {
+        // Apply global search filter if active
+        if self.global_search.filter_active {
             data = self.filter_data(&data);
         }
 
@@ -1880,25 +2021,33 @@ impl App {
     }
 
     fn filter_data(&self, data: &[Value]) -> Vec<Value> {
-        let query = self.search_query.to_lowercase();
-
         data.iter()
             .filter(|item| {
-                // Search through all string values in the item
-                self.item_matches_query(item, &query)
+                // Convert item to searchable string
+                let item_text = self.item_to_searchable_text(item);
+                // Use global search to match
+                self.global_search.matches(&item_text)
             })
             .cloned()
             .collect()
     }
 
-    fn item_matches_query(&self, item: &Value, query: &str) -> bool {
+    fn item_to_searchable_text(&self, item: &Value) -> String {
         match item {
-            Value::String(s) => s.to_lowercase().contains(query),
-            Value::Number(n) => n.to_string().contains(query),
-            Value::Bool(b) => b.to_string().contains(query),
-            Value::Array(arr) => arr.iter().any(|v| self.item_matches_query(v, query)),
-            Value::Object(map) => map.values().any(|v| self.item_matches_query(v, query)),
-            Value::Null => false,
+            Value::String(s) => s.clone(),
+            Value::Number(n) => n.to_string(),
+            Value::Bool(b) => b.to_string(),
+            Value::Array(arr) => arr
+                .iter()
+                .map(|v| self.item_to_searchable_text(v))
+                .collect::<Vec<_>>()
+                .join(" "),
+            Value::Object(map) => map
+                .values()
+                .map(|v| self.item_to_searchable_text(v))
+                .collect::<Vec<_>>()
+                .join(" "),
+            Value::Null => String::new(),
         }
     }
 
@@ -1956,28 +2105,6 @@ impl App {
             (_, Value::Null) => Ordering::Greater,
             _ => value_to_string(a).cmp(&value_to_string(b)),
         }
-    }
-
-    fn toggle_search_mode(&mut self) {
-        self.search_mode = !self.search_mode;
-    }
-
-    fn clear_search(&mut self) {
-        self.search_query.clear();
-        self.apply_sort_and_filter();
-        self.selected_index = 0;
-    }
-
-    fn update_search_query(&mut self, c: char) {
-        self.search_query.push(c);
-        self.apply_sort_and_filter();
-        self.selected_index = 0;
-    }
-
-    fn backspace_search_query(&mut self) {
-        self.search_query.pop();
-        self.apply_sort_and_filter();
-        self.selected_index = 0;
     }
 }
 
