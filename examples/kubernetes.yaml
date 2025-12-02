@@ -5,11 +5,6 @@ app:
   description: "Navigate Kubernetes resources with k9s-style interface"
   theme: "default"
 
-# Global configuration
-globals:
-  namespace: "default"
-  context: "" # Empty means current context
-
 # Start at namespaces view
 start: namespaces
 
@@ -26,24 +21,17 @@ pages:
       args: ["get", "namespaces", "-o", "json"]
       items: "$.items[*]"
       timeout: "30s"
-      cache: "30s"
+      refresh_interval: "1s"
     view:
       layout: table
       columns:
         - path: "$.metadata.name"
           display: "Name"
-          width: 30
         - path: "$.status.phase"
           display: "Status"
-          width: 15
-          style:
-            - condition: "{{ value == 'Active' }}"
-              color: green
-            - default: true
-              color: red
         - path: "$.metadata.creationTimestamp"
           display: "Age"
-          transform: "{{ value | timeago }}"
+          transform: "{{ metadata.creationTimestamp | timeago }}"
       sort:
         column: "$.metadata.name"
         order: asc
@@ -84,46 +72,25 @@ pages:
         ["get", "pods", "-n", "{{ namespaces.metadata.name }}", "-o", "json"]
       items: "$.items[*]"
       timeout: "30s"
-      cache: "10s"
+      refresh_interval: "5s"
     view:
       layout: table
       columns:
         - path: "$.metadata.name"
           display: "Name"
-          width: 40
         - path: "$.status.phase"
           display: "Status"
-          width: 12
-          style:
-            - condition: "{{ value == 'Running' }}"
-              color: green
-              bold: true
-            - condition: "{{ value == 'Pending' }}"
-              color: yellow
-            - condition: "{{ value == 'Failed' }}"
-              color: red
-            - default: true
-              color: white
         - path: "$.status.conditions[?(@.type=='Ready')].status"
           display: "Ready"
-          width: 8
         - path: "$.spec.containers[*].name"
           display: "Containers"
           transform: "{{ value | length }}"
-          width: 12
         - path: "$.status.containerStatuses[?(@.ready==true)]"
           display: "Ready/Total"
-          transform: "{{ value | length }}/{{ row.status.containerStatuses | length }}"
-          width: 12
+          transform: "{{ value | length }}/{{ status.containerStatuses | length }}"
         - path: "$.metadata.creationTimestamp"
           display: "Age"
           transform: "{{ value | timeago }}"
-          width: 12
-      row_style:
-        - condition: "{{ status.phase == 'Failed' }}"
-          color: red
-        - condition: "{{ status.phase == 'Pending' }}"
-          dim: true
     next:
       page: pod_detail
       context:
@@ -180,35 +147,9 @@ pages:
       items: "@this"
       timeout: "30s"
     view:
-      layout: detail
-      sections:
-        - title: "Metadata"
-          fields:
-            "Name": "$.metadata.name"
-            "Namespace": "$.metadata.namespace"
-            "Labels": "$.metadata.labels"
-            "Created": "$.metadata.creationTimestamp"
-            "Node": "$.spec.nodeName"
-
-        - title: "Status"
-          fields:
-            "Phase": "$.status.phase"
-            "Pod IP": "$.status.podIP"
-            "Host IP": "$.status.hostIP"
-            "QoS Class": "$.status.qosClass"
-            "Restart Policy": "$.spec.restartPolicy"
-
-        - title: "Containers"
-          fields:
-            "Container Names": "$.spec.containers[*].name"
-            "Images": "$.spec.containers[*].image"
-            "Ports": "$.spec.containers[*].ports[*].containerPort"
-
-        - title: "Conditions"
-          fields:
-            "Ready": "$.status.conditions[?(@.type=='Ready')].status"
-            "Scheduled": "$.status.conditions[?(@.type=='PodScheduled')].status"
-            "Initialized": "$.status.conditions[?(@.type=='Initialized')].status"
+      layout: text
+      syntax: json
+      line_numbers: true
     actions:
       - key: "l"
         name: "Logs"
@@ -224,35 +165,27 @@ pages:
   # ============================================================================
   pod_logs:
     title: "Logs - {{ pods.metadata.name }}"
-    description: "Pod logs"
+    description: "Pod logs (streaming)"
     data:
-      type: cli
+      type: stream
       command: "kubectl"
       args:
         [
           "logs",
+          "-f",
           "{{ pods.metadata.name }}",
           "-n",
           "{{ namespaces.metadata.name }}",
           "--tail=100",
         ]
-      items: "@this"
-      timeout: "30s"
+      buffer_size: 100
+      buffer_time: "15m"
+      follow: true
     view:
-      layout: yaml
-    actions:
-      - key: "f"
-        name: "Follow"
-        description: "Follow logs (tail -f)"
-        command: "kubectl"
-        args:
-          [
-            "logs",
-            "-f",
-            "{{ pods.metadata.name }}",
-            "-n",
-            "{{ namespaces.metadata.name }}",
-          ]
+      layout: logs
+      follow: true
+      wrap: true
+      show_timestamps: false
 
   # ============================================================================
   # POD DESCRIBE - kubectl describe output
@@ -274,7 +207,8 @@ pages:
       items: "@this"
       timeout: "30s"
     view:
-      layout: yaml
+      layout: text
+      line_numbers: true
 
   # ============================================================================
   # DEPLOYMENTS - List deployments in namespace
@@ -296,34 +230,23 @@ pages:
         ]
       items: "$.items[*]"
       timeout: "30s"
-      cache: "15s"
+      refresh_interval: "10s"
     view:
       layout: table
       columns:
         - path: "$.metadata.name"
           display: "Name"
-          width: 35
         - path: "$.spec.replicas"
           display: "Desired"
-          width: 10
         - path: "$.status.availableReplicas"
           display: "Available"
-          width: 10
-          style:
-            - condition: "{{ value == row.spec.replicas }}"
-              color: green
-            - default: true
-              color: yellow
         - path: "$.status.readyReplicas"
           display: "Ready"
-          width: 10
         - path: "$.status.updatedReplicas"
           display: "Updated"
-          width: 10
         - path: "$.metadata.creationTimestamp"
           display: "Age"
           transform: "{{ value | timeago }}"
-          width: 15
     next:
       page: deployment_detail
       context:
@@ -400,33 +323,9 @@ pages:
       items: "@this"
       timeout: "30s"
     view:
-      layout: detail
-      sections:
-        - title: "Metadata"
-          fields:
-            "Name": "$.metadata.name"
-            "Namespace": "$.metadata.namespace"
-            "Labels": "$.metadata.labels"
-            "Selector": "$.spec.selector.matchLabels"
-
-        - title: "Replicas"
-          fields:
-            "Desired": "$.spec.replicas"
-            "Available": "$.status.availableReplicas"
-            "Ready": "$.status.readyReplicas"
-            "Updated": "$.status.updatedReplicas"
-
-        - title: "Strategy"
-          fields:
-            "Type": "$.spec.strategy.type"
-            "Max Surge": "$.spec.strategy.rollingUpdate.maxSurge"
-            "Max Unavailable": "$.spec.strategy.rollingUpdate.maxUnavailable"
-
-        - title: "Containers"
-          fields:
-            "Container": "$.spec.template.spec.containers[0].name"
-            "Image": "$.spec.template.spec.containers[0].image"
-            "Ports": "$.spec.template.spec.containers[0].ports[*].containerPort"
+      layout: text
+      syntax: json
+      line_numbers: true
     actions:
       - key: "p"
         name: "Pods"
@@ -460,15 +359,8 @@ pages:
       columns:
         - path: "$.metadata.name"
           display: "Name"
-          width: 40
         - path: "$.status.phase"
           display: "Status"
-          width: 12
-          style:
-            - condition: "{{ value == 'Running' }}"
-              color: green
-            - default: true
-              color: yellow
         - path: "$.metadata.creationTimestamp"
           display: "Age"
           transform: "{{ value | timeago }}"
@@ -497,22 +389,17 @@ pages:
         ]
       items: "$.items[*]"
       timeout: "30s"
-      cache: "30s"
     view:
       layout: table
       columns:
         - path: "$.metadata.name"
           display: "Name"
-          width: 30
         - path: "$.spec.type"
           display: "Type"
-          width: 15
         - path: "$.spec.clusterIP"
           display: "Cluster IP"
-          width: 20
         - path: "$.spec.ports[*].port"
           display: "Ports"
-          width: 20
         - path: "$.metadata.creationTimestamp"
           display: "Age"
           transform: "{{ value | timeago }}"
@@ -554,29 +441,11 @@ pages:
           "-n",
           "{{ namespaces.metadata.name }}",
           "-o",
-          "json",
+          "yaml",
         ]
       items: "@this"
       timeout: "30s"
     view:
-      layout: detail
-      sections:
-        - title: "Metadata"
-          fields:
-            "Name": "$.metadata.name"
-            "Namespace": "$.metadata.namespace"
-            "Labels": "$.metadata.labels"
-            "Selector": "$.spec.selector"
-
-        - title: "Service"
-          fields:
-            "Type": "$.spec.type"
-            "Cluster IP": "$.spec.clusterIP"
-            "External IPs": "$.spec.externalIPs"
-            "Session Affinity": "$.spec.sessionAffinity"
-
-        - title: "Ports"
-          fields:
-            "Ports": "$.spec.ports[*].port"
-            "Target Ports": "$.spec.ports[*].targetPort"
-            "Protocols": "$.spec.ports[*].protocol"
+      layout: text
+      syntax: yaml
+      line_numbers: true

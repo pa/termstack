@@ -146,8 +146,6 @@ pub struct SingleDataSource {
     #[serde(default)]
     pub timeout: Option<String>,
     #[serde(default)]
-    pub cache: Option<String>,
-    #[serde(default)]
     pub refresh_interval: Option<String>,
 }
 
@@ -237,9 +235,8 @@ impl Default for HttpMethod {
 #[serde(tag = "layout", rename_all = "lowercase")]
 pub enum View {
     Table(TableView),
-    Detail(DetailView),
-    Logs(LogsView), // Phase 2
-    Yaml(YamlView),
+    Logs(LogsView),
+    Text(TextView),
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -320,20 +317,6 @@ impl Default for SortOrder {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct DetailView {
-    #[serde(default)]
-    pub sections: Vec<DetailSection>,
-    #[serde(default)]
-    pub fields: HashMap<String, String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct DetailSection {
-    pub title: String,
-    pub fields: HashMap<String, String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LogsView {
     #[serde(default = "default_true")]
     pub follow: bool,
@@ -357,8 +340,19 @@ pub struct LogFilter {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct YamlView {
-    // No additional config for now
+pub struct TextView {
+    /// Optional: Explicitly specify the content type (yaml, json, xml, toml, etc.)
+    /// If not specified, will auto-detect based on content
+    #[serde(default)]
+    pub syntax: Option<String>,
+
+    /// Enable line numbers
+    #[serde(default)]
+    pub line_numbers: bool,
+
+    /// Enable word wrap for long lines
+    #[serde(default = "default_true")]
+    pub wrap: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

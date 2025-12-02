@@ -117,12 +117,6 @@ impl ConfigValidator {
                 .with_context(|| format!("Invalid timeout format: {}", timeout))?;
         }
 
-        // Validate cache format if present
-        if let Some(cache) = &source.cache {
-            humantime::parse_duration(cache)
-                .with_context(|| format!("Invalid cache format: {}", cache))?;
-        }
-
         Ok(())
     }
 

@@ -39,10 +39,8 @@ tui-input = "0.10"
 regex = "1"
 ansi-to-tui = "7"
 
-# Phase 2 - commented out for now
-# mlua = { version = "0.9", features = ["lua54", "async"] }
-# notify = "6"
-# syntect = "5"
+# Syntax highlighting
+tui-syntax-highlight = "0.1"
 
 # Read the optimization guideline for more details: https://ratatui.rs/recipes/apps/release-your-app/#optimizations
 [profile.release]

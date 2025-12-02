@@ -14,7 +14,7 @@ use tokio::sync::mpsc;
 use crate::{
     action::executor::{ActionExecutor, ActionResult},
     config::{Config, View as ConfigView},
-    data::{DataCache, JsonPathExtractor, StreamMessage},
+    data::{JsonPathExtractor, StreamMessage},
     error::Result,
     globals,
     navigation::{NavigationContext, NavigationFrame, NavigationStack},
@@ -139,7 +139,6 @@ pub struct App {
     current_page: String,
     nav_stack: NavigationStack,
     nav_context: NavigationContext,
-    data_cache: DataCache,
     action_executor: ActionExecutor,
 
     // Current view state
@@ -174,6 +173,9 @@ pub struct App {
     logs_follow: bool,
     logs_wrap: bool,
     logs_horizontal_scroll: usize,
+
+    // Action mode (prefix key pattern)
+    action_mode: bool,
 
     // UI state
     needs_clear: bool,
@@ -211,7 +213,6 @@ impl App {
             current_page,
             nav_stack: NavigationStack::default(),
             nav_context,
-            data_cache: DataCache::new(),
             action_executor,
             current_data: Vec::new(),
             filtered_data: Vec::new(),
@@ -232,6 +233,7 @@ impl App {
             logs_follow: true,
             logs_wrap: true,
             logs_horizontal_scroll: 0,
+            action_mode: false,
             needs_clear: false,
         })
     }
@@ -469,18 +471,6 @@ impl App {
 
         match data_source {
             DataSource::SingleOrStream(crate::config::SingleOrStream::Single(single)) => {
-                // Generate cache key
-                let cache_key = self.generate_cache_key(&self.current_page, single)?;
-
-                // Check cache first if TTL is set
-                if single.cache.is_some() {
-                    if let Some(cached_data) = self.data_cache.get(&cache_key).await {
-                        if let Value::Array(arr) = cached_data {
-                            return Ok(arr);
-                        }
-                    }
-                }
-
                 match single.source_type {
                     crate::config::DataSourceType::Cli => {
                         let command = single.command.as_ref().ok_or_else(|| {
@@ -525,15 +515,6 @@ impl App {
                             vec![result]
                         };
 
-                        // Cache the result if TTL is set
-                        if let Some(cache_str) = &single.cache {
-                            if let Ok(duration) = humantime::parse_duration(cache_str) {
-                                self.data_cache
-                                    .set(cache_key, Value::Array(items.clone()), duration)
-                                    .await;
-                            }
-                        }
-
                         Ok(items)
                     }
                     _ => Err(crate::error::TermStackError::DataProvider(
@@ -550,34 +531,6 @@ impl App {
                 Ok(Vec::new())
             }
         }
-    }
-
-    fn generate_cache_key(
-        &self,
-        page_id: &str,
-        source: &crate::config::SingleDataSource,
-    ) -> Result<String> {
-        // Create a cache key from page ID, command, args, and context
-        let ctx = self.create_template_context(None);
-
-        let empty_string = String::new();
-        let command = source.command.as_ref().unwrap_or(&empty_string);
-        let rendered_command = globals::template_engine().render_string(command, &ctx)?;
-
-        let rendered_args: Result<Vec<String>> = source
-            .args
-            .iter()
-            .map(|arg| globals::template_engine().render_string(arg, &ctx))
-            .collect();
-        let rendered_args = rendered_args?;
-
-        // Create a deterministic key
-        Ok(format!(
-            "{}:{}:{}",
-            page_id,
-            rendered_command,
-            rendered_args.join(":")
-        ))
     }
 
     fn create_template_context(&self, current_row: Option<&Value>) -> TemplateContext {
@@ -682,8 +635,12 @@ impl App {
                 self.show_quit_confirm = true;
             }
             KeyCode::Esc => {
+                // If in action mode, exit action mode first
+                if self.action_mode {
+                    self.action_mode = false;
+                }
                 // If search filter is active, clear it first
-                if self.global_search.filter_active {
+                else if self.global_search.filter_active {
                     self.global_search.clear();
                     // Re-filter the data for table views
                     if !self.stream_active {
@@ -760,9 +717,19 @@ impl App {
                 }
             }
             KeyCode::Enter => self.navigate_next().await,
+            KeyCode::Char('a') => {
+                // Enter action mode
+                if !self.action_mode {
+                    self.action_mode = true;
+                }
+            }
             KeyCode::Char(c) => {
-                // Check for action keybindings
-                self.handle_action_key(c).await;
+                // If in action mode, handle as action key
+                if self.action_mode {
+                    self.action_mode = false; // Exit action mode
+                    self.handle_action_key(c).await;
+                }
+                // Otherwise, ignore non-mapped keys
             }
             _ => {}
         }
@@ -937,6 +904,15 @@ impl App {
     }
 
     fn move_down(&mut self) {
+        // Check if we're in a text view
+        if let Some(page) = globals::config().pages.get(&self.current_page) {
+            if matches!(page.view, ConfigView::Text(_)) {
+                // Text view: scroll down by one line
+                self.scroll_offset += 1;
+                return;
+            }
+        }
+
         let max_index = if self.stream_active || !self.stream_buffer.is_empty() {
             // Stream mode: use buffer
             if self.stream_buffer.is_empty() {
@@ -971,6 +947,17 @@ impl App {
     }
 
     fn move_up(&mut self) {
+        // Check if we're in a text view
+        if let Some(page) = globals::config().pages.get(&self.current_page) {
+            if matches!(page.view, ConfigView::Text(_)) {
+                // Text view: scroll up by one line
+                if self.scroll_offset > 0 {
+                    self.scroll_offset -= 1;
+                }
+                return;
+            }
+        }
+
         if self.selected_index > 0 {
             self.selected_index -= 1;
 
@@ -983,6 +970,15 @@ impl App {
     }
 
     fn move_top(&mut self) {
+        // Check if we're in a text view
+        if let Some(page) = globals::config().pages.get(&self.current_page) {
+            if matches!(page.view, ConfigView::Text(_)) {
+                // Text view: scroll to top
+                self.scroll_offset = 0;
+                return;
+            }
+        }
+
         self.selected_index = 0;
 
         // Pause auto-follow in stream mode
@@ -993,6 +989,15 @@ impl App {
     }
 
     fn move_bottom(&mut self) {
+        // Check if we're in a text view
+        if let Some(page) = globals::config().pages.get(&self.current_page) {
+            if matches!(page.view, ConfigView::Text(_)) {
+                // Text view: scroll to bottom (will be clamped in render_text)
+                self.scroll_offset = usize::MAX;
+                return;
+            }
+        }
+
         if self.stream_active || !self.stream_buffer.is_empty() {
             // Stream mode
             if !self.stream_buffer.is_empty() {
@@ -1012,6 +1017,9 @@ impl App {
         if let Some(frame) = self.nav_stack.pop() {
             // Stop any active stream before navigating back
             self.stop_stream();
+
+            // Clear search when navigating back
+            self.global_search.clear();
 
             self.current_page = frame.page_id;
             self.selected_index = frame.selected_index;
@@ -1247,30 +1255,8 @@ impl App {
                 let logs_view = logs_view.clone();
                 self.render_logs(frame, area, &logs_view);
             }
-            ConfigView::Detail(detail_view) => {
-                let detail_view = detail_view.clone();
-                self.render_detail(frame, area, &detail_view);
-            }
-            ConfigView::Yaml(_yaml_view) => {
-                let page_title = self.get_rendered_page_title();
-
-                // Display current_data as JSON (YAML view not fully implemented)
-                if self.current_data.is_empty() {
-                    let msg = Paragraph::new("No data")
-                        .block(Block::default().borders(Borders::ALL).title(page_title));
-                    frame.render_widget(msg, area);
-                } else {
-                    let json_str = serde_json::to_string_pretty(&self.current_data[0])
-                        .unwrap_or_else(|_| "Failed to serialize".to_string());
-
-                    let lines: Vec<Line> = json_str.lines().map(|line| Line::from(line)).collect();
-
-                    let content = Paragraph::new(lines)
-                        .block(Block::default().borders(Borders::ALL).title(page_title))
-                        .wrap(ratatui::widgets::Wrap { trim: false });
-
-                    frame.render_widget(content, area);
-                }
+            ConfigView::Text(text_view) => {
+                self.render_text(frame, area, text_view);
             }
         }
     }
@@ -1321,7 +1307,11 @@ impl App {
                             if let Ok(Some(value)) = extractor.extract_single(item) {
                                 // Apply transform if present
                                 if let Some(transform) = &col.transform {
-                                    let row_ctx = self.create_template_context(Some(&value));
+                                    // Create context with full row for transform
+                                    let mut row_ctx = self.create_template_context(Some(item));
+                                    // Add the extracted value as "value" page context for easy access in transforms
+                                    row_ctx = row_ctx
+                                        .with_page_context("value".to_string(), value.clone());
                                     globals::template_engine()
                                         .render_string(transform, &row_ctx)
                                         .unwrap_or_else(|_| value_to_string(&value))
@@ -1372,80 +1362,258 @@ impl App {
         frame.render_widget(table, area);
     }
 
-    fn render_detail(
+    fn render_text(
         &mut self,
         frame: &mut Frame,
         area: Rect,
-        detail_config: &crate::config::schema::DetailView,
+        text_config: &crate::config::schema::TextView,
     ) {
         let page_title = self.get_rendered_page_title();
 
         if self.current_data.is_empty() {
-            let empty = Paragraph::new("No data")
+            let msg = Paragraph::new("No data")
                 .block(Block::default().borders(Borders::ALL).title(page_title));
-            frame.render_widget(empty, area);
+            frame.render_widget(msg, area);
             return;
         }
 
+        // Get the first item (text views typically show single document)
         let item = &self.current_data[0];
-        let mut lines = Vec::new();
 
-        // Render sections if defined
-        if !detail_config.sections.is_empty() {
-            for section in &detail_config.sections {
-                // Section title
-                lines.push(Line::from(vec![Span::styled(
-                    format!("─── {} ", section.title),
+        // Convert to string representation
+        let content_str = if item.is_string() {
+            // Already a string - check if it's JSON and re-format for proper indentation
+            let raw = item.as_str().unwrap_or("");
+            if let Ok(json_val) = serde_json::from_str::<Value>(raw) {
+                // Re-parse and pretty-print JSON
+                serde_json::to_string_pretty(&json_val).unwrap_or_else(|_| raw.to_string())
+            } else {
+                raw.to_string()
+            }
+        } else {
+            // Convert JSON object to formatted string
+            serde_json::to_string_pretty(item).unwrap_or_else(|_| "Failed to serialize".to_string())
+        };
+
+        // Auto-detect content type if not specified
+        let detected_syntax: String = text_config
+            .syntax
+            .as_ref()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| self.detect_content_type(&content_str).to_string());
+
+        // Apply syntax highlighting
+        let mut lines =
+            self.highlight_text(&content_str, &detected_syntax, text_config.line_numbers);
+
+        // Apply search filter if active
+        if self.global_search.filter_active && !self.global_search.query.is_empty() {
+            let content_lines: Vec<&str> = content_str.lines().collect();
+            lines = lines
+                .into_iter()
+                .zip(content_lines.iter())
+                .filter(|(_, line_text)| self.global_search.matches(line_text))
+                .map(|(line, _)| line)
+                .collect();
+        }
+
+        let total_lines = lines.len();
+
+        // Calculate visible area
+        let visible_height = area.height.saturating_sub(2) as usize; // Account for borders
+
+        // Adjust scroll offset to stay within bounds
+        if self.scroll_offset >= total_lines.saturating_sub(visible_height) {
+            self.scroll_offset = total_lines.saturating_sub(visible_height);
+        }
+
+        let scroll_offset = self.scroll_offset;
+
+        // Get visible lines based on scroll offset
+        let visible_lines: Vec<Line> = lines
+            .into_iter()
+            .skip(scroll_offset)
+            .take(visible_height)
+            .collect();
+
+        let mut paragraph = Paragraph::new(visible_lines).block(
+            Block::default().borders(Borders::ALL).title(format!(
+                "{} [{}] ({}/{})",
+                page_title,
+                detected_syntax,
+                scroll_offset + 1,
+                total_lines
+            )),
+        );
+
+        if text_config.wrap {
+            paragraph = paragraph.wrap(ratatui::widgets::Wrap { trim: false });
+        }
+
+        frame.render_widget(paragraph, area);
+    }
+
+    /// Detect content type based on content
+    fn detect_content_type(&self, content: &str) -> &str {
+        let trimmed = content.trim_start();
+
+        // YAML detection
+        if trimmed.starts_with("---")
+            || trimmed.contains("apiVersion:")
+            || trimmed.contains("kind:")
+        {
+            return "yaml";
+        }
+
+        // JSON detection
+        if trimmed.starts_with('{') || trimmed.starts_with('[') {
+            return "json";
+        }
+
+        // XML detection
+        if trimmed.starts_with("<?xml") || trimmed.starts_with('<') {
+            return "xml";
+        }
+
+        // TOML detection
+        if trimmed.contains('[') && trimmed.contains(']') && trimmed.contains('=') {
+            return "toml";
+        }
+
+        // Default to plain text
+        "text"
+    }
+
+    /// Apply basic syntax highlighting to text
+    fn highlight_text(
+        &self,
+        content: &str,
+        syntax: &str,
+        line_numbers: bool,
+    ) -> Vec<Line<'static>> {
+        let lines: Vec<&str> = content.lines().collect();
+        let line_count = lines.len();
+        let line_num_width = line_count.to_string().len();
+
+        lines
+            .iter()
+            .enumerate()
+            .map(|(idx, line)| {
+                let mut spans = Vec::new();
+
+                // Add line numbers if enabled
+                if line_numbers {
+                    spans.push(Span::styled(
+                        format!("{:>width$} │ ", idx + 1, width = line_num_width),
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                }
+
+                // Apply syntax-specific highlighting
+                match syntax {
+                    "yaml" => spans.extend(self.highlight_yaml_line(line)),
+                    "json" => spans.extend(self.highlight_json_line(line)),
+                    "xml" => spans.extend(self.highlight_xml_line(line)),
+                    _ => spans.push(Span::raw(line.to_string())),
+                }
+
+                Line::from(spans)
+            })
+            .collect()
+    }
+
+    /// Simple YAML syntax highlighting
+    fn highlight_yaml_line(&self, line: &str) -> Vec<Span<'static>> {
+        let trimmed = line.trim_start();
+
+        // Comments
+        if trimmed.starts_with('#') {
+            return vec![Span::styled(
+                line.to_string(),
+                Style::default().fg(Color::Green),
+            )];
+        }
+
+        // Document separator
+        if trimmed.starts_with("---") || trimmed.starts_with("...") {
+            return vec![Span::styled(
+                line.to_string(),
+                Style::default().fg(Color::Magenta),
+            )];
+        }
+
+        // Key-value pairs
+        if let Some(colon_pos) = line.find(':') {
+            let key = &line[..colon_pos];
+            let rest = &line[colon_pos..];
+
+            vec![
+                Span::styled(
+                    key.to_string(),
                     Style::default()
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD),
-                )]));
-                lines.push(Line::from(""));
+                ),
+                Span::styled(rest.to_string(), Style::default().fg(Color::White)),
+            ]
+        } else {
+            vec![Span::raw(line.to_string())]
+        }
+    }
 
-                // Section fields
-                for (label, json_path) in &section.fields {
-                    if let Ok(extractor) = JsonPathExtractor::new(json_path) {
-                        if let Ok(Some(value)) = extractor.extract_single(item) {
-                            let value_str = value_to_string(&value);
-                            lines.push(Line::from(vec![
-                                Span::styled(
-                                    format!("  {}: ", label),
-                                    Style::default()
-                                        .fg(Color::Yellow)
-                                        .add_modifier(Modifier::BOLD),
-                                ),
-                                Span::raw(value_str),
-                            ]));
+    /// Simple JSON syntax highlighting
+    fn highlight_json_line(&self, line: &str) -> Vec<Span<'static>> {
+        let trimmed = line.trim();
+
+        // Keys (quoted strings followed by colon)
+        if trimmed.contains("\":") {
+            let mut spans = Vec::new();
+            let mut current_pos = 0;
+
+            for (idx, ch) in line.char_indices() {
+                if ch == '"' && idx + 1 < line.len() {
+                    // Find closing quote
+                    if let Some(close_idx) = line[idx + 1..].find('"') {
+                        let close_pos = idx + 1 + close_idx;
+                        if close_pos + 1 < line.len()
+                            && line.chars().nth(close_pos + 1) == Some(':')
+                        {
+                            // This is a key
+                            if current_pos < idx {
+                                spans.push(Span::raw(line[current_pos..idx].to_string()));
+                            }
+                            spans.push(Span::styled(
+                                line[idx..=close_pos].to_string(),
+                                Style::default()
+                                    .fg(Color::Cyan)
+                                    .add_modifier(Modifier::BOLD),
+                            ));
+                            current_pos = close_pos + 1;
                         }
                     }
                 }
-                lines.push(Line::from(""));
             }
-        } else if !detail_config.fields.is_empty() {
-            // Render flat fields if no sections
-            for (label, json_path) in &detail_config.fields {
-                if let Ok(extractor) = JsonPathExtractor::new(json_path) {
-                    if let Ok(Some(value)) = extractor.extract_single(item) {
-                        let value_str = value_to_string(&value);
-                        lines.push(Line::from(vec![
-                            Span::styled(
-                                format!("{}: ", label),
-                                Style::default()
-                                    .fg(Color::Yellow)
-                                    .add_modifier(Modifier::BOLD),
-                            ),
-                            Span::raw(value_str),
-                        ]));
-                    }
-                }
+
+            if current_pos < line.len() {
+                spans.push(Span::raw(line[current_pos..].to_string()));
             }
+
+            spans
+        } else {
+            vec![Span::raw(line.to_string())]
         }
+    }
 
-        let detail = Paragraph::new(lines)
-            .block(Block::default().borders(Borders::ALL).title(page_title))
-            .wrap(ratatui::widgets::Wrap { trim: false });
-
-        frame.render_widget(detail, area);
+    /// Simple XML syntax highlighting
+    fn highlight_xml_line(&self, line: &str) -> Vec<Span<'static>> {
+        if line.trim().starts_with('<') {
+            vec![Span::styled(
+                line.to_string(),
+                Style::default().fg(Color::Magenta),
+            )]
+        } else {
+            vec![Span::raw(line.to_string())]
+        }
     }
 
     /// Parse ANSI escape codes in text and convert to ratatui Line with styles
@@ -1747,32 +1915,62 @@ impl App {
         ]);
 
         // Build action shortcuts (if available)
-        let action_line = if let Some(page) = globals::config().pages.get(&self.current_page) {
+        let action_line = if self.action_mode {
+            // In action mode: show available actions
+            if let Some(page) = globals::config().pages.get(&self.current_page) {
+                if let Some(actions) = &page.actions {
+                    if !actions.is_empty() {
+                        let action_shortcuts: Vec<Span> = actions
+                            .iter()
+                            .flat_map(|a| {
+                                vec![
+                                    Span::styled(
+                                        format!("{}", a.key),
+                                        Style::default()
+                                            .fg(Color::Yellow)
+                                            .add_modifier(Modifier::BOLD),
+                                    ),
+                                    Span::raw(format!(": {}  ", a.name)),
+                                ]
+                            })
+                            .collect();
+
+                        let mut spans = vec![Span::styled(
+                            "ACTION MODE - Select: ",
+                            Style::default()
+                                .fg(Color::Black)
+                                .bg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        )];
+                        spans.extend(action_shortcuts);
+                        spans.push(Span::styled(
+                            " [ESC to cancel]",
+                            Style::default().fg(Color::DarkGray),
+                        ));
+                        Line::from(spans)
+                    } else {
+                        Line::from("")
+                    }
+                } else {
+                    Line::from("")
+                }
+            } else {
+                Line::from("")
+            }
+        } else if let Some(page) = globals::config().pages.get(&self.current_page) {
+            // Normal mode: show hint to press 'a'
             if let Some(actions) = &page.actions {
                 if !actions.is_empty() {
-                    let action_shortcuts: Vec<Span> = actions
-                        .iter()
-                        .flat_map(|a| {
-                            vec![
-                                Span::styled(
-                                    format!("{}", a.key),
-                                    Style::default()
-                                        .fg(Color::Yellow)
-                                        .add_modifier(Modifier::BOLD),
-                                ),
-                                Span::raw(format!(": {}  ", a.name)),
-                            ]
-                        })
-                        .collect();
-
-                    let mut spans = vec![Span::styled(
-                        "Actions: ",
-                        Style::default()
-                            .fg(Color::Green)
-                            .add_modifier(Modifier::BOLD),
-                    )];
-                    spans.extend(action_shortcuts);
-                    Line::from(spans)
+                    Line::from(vec![
+                        Span::styled("Press ", Style::default().fg(Color::DarkGray)),
+                        Span::styled(
+                            "a",
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(" for actions", Style::default().fg(Color::DarkGray)),
+                    ])
                 } else {
                     Line::from("")
                 }

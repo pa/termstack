@@ -124,10 +124,15 @@ impl DataProvider for CliProvider {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
 
-        // Try to parse as JSON
-        serde_json::from_str(&stdout).map_err(|e| {
-            TermStackError::DataProvider(format!("Failed to parse command output as JSON: {}", e))
-        })
+        // Try to parse as JSON first
+        match serde_json::from_str(&stdout) {
+            Ok(json) => Ok(json),
+            Err(_) => {
+                // If JSON parsing fails, wrap the raw text as a JSON string value
+                // This allows text views to display raw command output (like kubectl describe, yaml, etc.)
+                Ok(Value::String(stdout.to_string()))
+            }
+        }
     }
 }
 
