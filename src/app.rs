@@ -82,6 +82,17 @@ impl GlobalSearch {
             return true; // No filter, everything matches
         }
 
+        // Fast path: for literal search (no regex), use simple string contains
+        if !self.query.starts_with('!') {
+            // Literal search - much faster than regex
+            if self.case_sensitive {
+                return text.contains(&self.query);
+            } else {
+                return text.to_lowercase().contains(&self.query.to_lowercase());
+            }
+        }
+
+        // Regex path
         match &self.regex_pattern {
             Some(regex) => regex.is_match(text),
             None => true, // Invalid regex, show everything
@@ -791,6 +802,7 @@ impl App {
                     if !self.stream_active {
                         self.apply_sort_and_filter();
                         self.selected_index = 0;
+                        self.needs_render = true;
                     } else {
                         // For stream views, trigger render to apply filter
                         self.selected_index = 0;
@@ -805,6 +817,7 @@ impl App {
                     if !self.stream_active {
                         self.apply_sort_and_filter();
                         self.selected_index = 0;
+                        self.needs_render = true;
                     } else {
                         // For stream views, trigger render to clear filter
                         self.selected_index = 0;
