@@ -146,6 +146,7 @@ pub struct App {
     filtered_data: Vec<Value>,
     selected_index: usize,
     scroll_offset: usize,
+    table_state: ratatui::widgets::TableState,
     loading: bool,
     error_message: Option<String>,
 
@@ -179,6 +180,16 @@ pub struct App {
 
     // UI state
     needs_clear: bool,
+    needs_render: bool,
+
+    // Data refresh watcher
+    refresh_receiver: Option<mpsc::Receiver<RefreshMessage>>,
+}
+
+#[derive(Debug)]
+struct RefreshMessage {
+    page_name: String,
+    data: Vec<Value>,
 }
 
 #[derive(Clone)]
@@ -190,7 +201,17 @@ struct ActionConfirm {
 #[derive(Clone)]
 struct ActionMessage {
     message: String,
-    is_error: bool,
+    message_type: MessageType,
+    timestamp: std::time::Instant,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+#[allow(dead_code)]
+enum MessageType {
+    Success,
+    Error,
+    Info,
+    Warning,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -218,6 +239,7 @@ impl App {
             filtered_data: Vec::new(),
             selected_index: 0,
             scroll_offset: 0,
+            table_state: ratatui::widgets::TableState::default(),
             loading: false,
             error_message: None,
             global_search: GlobalSearch::default(),
@@ -235,6 +257,8 @@ impl App {
             logs_horizontal_scroll: 0,
             action_mode: false,
             needs_clear: false,
+            needs_render: true, // Initial render needed
+            refresh_receiver: None,
         })
     }
 
@@ -250,18 +274,35 @@ impl App {
                 self.needs_clear = false;
             }
 
-            terminal.draw(|frame| self.render(frame))?;
+            // Check for refresh updates from background watcher
+            self.check_refresh_updates();
 
             // Check for stream updates
             self.check_stream_updates();
 
-            // Check for auto-refresh
-            self.check_auto_refresh().await;
+            // Auto-dismiss notifications after 3 seconds
+            if let Some(msg) = &self.action_message {
+                if msg.timestamp.elapsed() > std::time::Duration::from_secs(3) {
+                    self.action_message = None;
+                    self.needs_render = true;
+                }
+            }
 
+            // Only render if needed (data changed, user input, etc.)
+            if self.needs_render {
+                // Update table state to match selected_index
+                self.table_state.select(Some(self.selected_index));
+
+                terminal.draw(|frame| self.render(frame))?;
+                self.needs_render = false;
+            }
+
+            // Poll for user input with timeout
             if let Ok(true) = event::poll(std::time::Duration::from_millis(100)) {
                 if let Event::Key(key) = event::read()? {
                     if key.kind == KeyEventKind::Press {
                         self.handle_key(key).await;
+                        self.needs_render = true; // User input requires re-render
                     }
                 }
             }
@@ -309,25 +350,25 @@ impl App {
                 self.scroll_offset = 0;
                 self.loading = false;
                 self.last_refresh = std::time::Instant::now();
+                self.needs_render = true;
+
+                // Spawn background refresh watcher if refresh_interval is set
+                self.spawn_refresh_watcher(self.current_page.clone(), page);
             }
             Err(e) => {
                 self.error_message = Some(format!("Failed to load data: {}", e));
                 self.loading = false;
+                self.needs_render = true;
             }
         }
     }
 
-    async fn check_auto_refresh(&mut self) {
-        // Get refresh_interval for current page
-        let page = match globals::config().pages.get(&self.current_page) {
-            Some(p) => p,
-            None => return,
-        };
+    fn spawn_refresh_watcher(&mut self, page_name: String, page: crate::config::Page) {
+        use crate::config::DataSource;
 
+        // Get refresh interval
         let refresh_interval = match &page.data {
-            crate::config::DataSource::SingleOrStream(crate::config::SingleOrStream::Single(
-                single,
-            )) => {
+            DataSource::SingleOrStream(crate::config::SingleOrStream::Single(single)) => {
                 if let Some(interval_str) = &single.refresh_interval {
                     humantime::parse_duration(interval_str).ok()
                 } else {
@@ -337,10 +378,64 @@ impl App {
             _ => None,
         };
 
-        // If refresh_interval is set and expired, reload
-        if let Some(interval) = refresh_interval {
-            if self.last_refresh.elapsed() >= interval && !self.loading {
-                self.load_current_page().await;
+        // Only spawn watcher if refresh_interval is set
+        let interval = match refresh_interval {
+            Some(i) => i,
+            None => return,
+        };
+
+        // Create channel for sending refresh updates
+        let (tx, rx) = mpsc::channel(10);
+        self.refresh_receiver = Some(rx);
+
+        // Clone necessary data for the background task
+        let nav_context = self.nav_context.clone();
+
+        // Spawn background task
+        tokio::spawn(async move {
+            let mut interval_timer = tokio::time::interval(interval);
+            interval_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+            loop {
+                interval_timer.tick().await;
+
+                // Fetch data in background
+                let data = Self::fetch_data_static(&page, &nav_context).await;
+
+                if let Ok(data) = data {
+                    // Send update through channel
+                    if tx
+                        .send(RefreshMessage {
+                            page_name: page_name.clone(),
+                            data,
+                        })
+                        .await
+                        .is_err()
+                    {
+                        // Channel closed, exit background task
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
+    fn check_refresh_updates(&mut self) {
+        // Collect all pending messages first
+        let mut messages = Vec::new();
+        if let Some(receiver) = &mut self.refresh_receiver {
+            while let Ok(msg) = receiver.try_recv() {
+                messages.push(msg);
+            }
+        }
+
+        // Process messages without holding the receiver borrow
+        for msg in messages {
+            // Only update if the message is for the current page
+            if msg.page_name == self.current_page {
+                self.current_data = msg.data;
+                self.apply_sort_and_filter();
+                self.needs_render = true;
             }
         }
     }
@@ -432,6 +527,7 @@ impl App {
                 match msg {
                     StreamMessage::Connected => {
                         self.stream_status = StreamStatus::Streaming;
+                        self.needs_render = true;
                     }
                     StreamMessage::Data(line) => {
                         self.stream_status = StreamStatus::Streaming;
@@ -448,15 +544,19 @@ impl App {
                         if self.logs_follow && !self.stream_paused {
                             self.selected_index = self.stream_buffer.len().saturating_sub(1);
                         }
+
+                        self.needs_render = true;
                     }
                     StreamMessage::End => {
                         self.stream_status = StreamStatus::Stopped;
                         self.stream_active = false;
+                        self.needs_render = true;
                     }
                     StreamMessage::Error(err) => {
                         self.stream_status = StreamStatus::Error(err.clone());
                         self.stream_active = false;
                         self.error_message = Some(format!("Stream error: {}", err));
+                        self.needs_render = true;
                     }
                 }
             }
@@ -545,6 +645,82 @@ impl App {
         }
 
         ctx
+    }
+
+    // Static version of fetch_page_data for background tasks
+    async fn fetch_data_static(
+        page: &crate::config::Page,
+        nav_context: &NavigationContext,
+    ) -> Result<Vec<Value>> {
+        use crate::config::DataSource;
+        use crate::data::{CliProvider, DataProvider};
+
+        let data_source = &page.data;
+
+        match data_source {
+            DataSource::SingleOrStream(crate::config::SingleOrStream::Single(single)) => {
+                match single.source_type {
+                    crate::config::DataSourceType::Cli => {
+                        let command = single.command.as_ref().ok_or_else(|| {
+                            crate::error::TermStackError::DataProvider(
+                                "Missing command".to_string(),
+                            )
+                        })?;
+
+                        // Create template context
+                        let mut ctx =
+                            TemplateContext::new().with_globals(nav_context.globals.clone());
+                        for (page_name, data) in &nav_context.page_contexts {
+                            ctx = ctx.with_page_context(page_name.clone(), data.clone());
+                        }
+
+                        // Render command and args with templates
+                        let rendered_command =
+                            globals::template_engine().render_string(command, &ctx)?;
+                        let rendered_args: Result<Vec<String>> = single
+                            .args
+                            .iter()
+                            .map(|arg| globals::template_engine().render_string(arg, &ctx))
+                            .collect();
+                        let rendered_args = rendered_args?;
+
+                        let mut provider = CliProvider::new(rendered_command)
+                            .with_args(rendered_args)
+                            .with_shell(single.shell);
+
+                        if let Some(timeout_str) = &single.timeout {
+                            if let Ok(duration) = humantime::parse_duration(timeout_str) {
+                                provider = provider.with_timeout(duration);
+                            }
+                        }
+
+                        let data_context = crate::data::provider::DataContext {
+                            globals: nav_context.globals.clone(),
+                            page_contexts: nav_context.page_contexts.clone(),
+                        };
+
+                        let result = provider.fetch(&data_context).await?;
+
+                        // Extract items using JSONPath
+                        let items = if let Some(items_path) = &single.items {
+                            let extractor = JsonPathExtractor::new(items_path)?;
+                            extractor.extract(&result)?
+                        } else {
+                            vec![result]
+                        };
+
+                        Ok(items)
+                    }
+                    _ => Err(crate::error::TermStackError::DataProvider(
+                        "HTTP and Stream sources not yet implemented".to_string(),
+                    )),
+                }
+            }
+            DataSource::Multi(_) => Err(crate::error::TermStackError::DataProvider(
+                "Multi-source not yet implemented".to_string(),
+            )),
+            DataSource::SingleOrStream(crate::config::SingleOrStream::Stream(_)) => Ok(Vec::new()),
+        }
     }
 
     async fn handle_key(&mut self, key: KeyEvent) {
@@ -811,24 +987,99 @@ impl App {
     }
 
     async fn execute_action(&mut self, action: &crate::config::schema::Action) {
-        // Create template context
+        // Create template context for rendering custom messages
+        let selected_row = self.get_selected_row();
+        let template_ctx = self.create_template_context(selected_row);
+
+        // Create context map for action executor
         let context = self.create_template_context_map();
 
         // Execute action
         match self.action_executor.execute(action, &context).await {
-            Ok(ActionResult::Success(msg)) => {
-                self.action_message = Some(ActionMessage {
-                    message: msg.unwrap_or_else(|| "Action completed successfully".to_string()),
-                    is_error: false,
-                });
+            Ok(ActionResult::Success(_msg)) => {
+                // Only show notification if explicitly configured
+                if let Some(notification) = &action.notification {
+                    if let Some(custom_msg) = &notification.on_success {
+                        let message = globals::template_engine()
+                            .render_string(custom_msg, &template_ctx)
+                            .unwrap_or_else(|_| custom_msg.clone());
+
+                        self.action_message = Some(ActionMessage {
+                            message,
+                            message_type: MessageType::Success,
+                            timestamp: std::time::Instant::now(),
+                        });
+                        self.needs_render = true;
+                    }
+                } else if let Some(success_msg) = &action.success_message {
+                    // Legacy support for success_message
+                    let message = globals::template_engine()
+                        .render_string(success_msg, &template_ctx)
+                        .unwrap_or_else(|_| success_msg.clone());
+
+                    self.action_message = Some(ActionMessage {
+                        message,
+                        message_type: MessageType::Success,
+                        timestamp: std::time::Instant::now(),
+                    });
+                    self.needs_render = true;
+                }
+                // If neither notification nor success_message is set, execute silently
             }
             Ok(ActionResult::Error(msg)) => {
+                // Always show errors, but use custom message if configured
+                let message = if let Some(notification) = &action.notification {
+                    if let Some(custom_msg) = &notification.on_failure {
+                        globals::template_engine()
+                            .render_string(custom_msg, &template_ctx)
+                            .unwrap_or_else(|_| custom_msg.clone())
+                    } else {
+                        msg
+                    }
+                } else if let Some(error_msg) = &action.error_message {
+                    globals::template_engine()
+                        .render_string(error_msg, &template_ctx)
+                        .unwrap_or_else(|_| error_msg.clone())
+                } else {
+                    msg
+                };
+
                 self.action_message = Some(ActionMessage {
-                    message: msg,
-                    is_error: true,
+                    message,
+                    message_type: MessageType::Error,
+                    timestamp: std::time::Instant::now(),
                 });
+                self.needs_render = true;
             }
             Ok(ActionResult::Refresh) => {
+                // Show success notification if configured, then reload
+                if let Some(notification) = &action.notification {
+                    if let Some(custom_msg) = &notification.on_success {
+                        let message = globals::template_engine()
+                            .render_string(custom_msg, &template_ctx)
+                            .unwrap_or_else(|_| custom_msg.clone());
+
+                        self.action_message = Some(ActionMessage {
+                            message,
+                            message_type: MessageType::Success,
+                            timestamp: std::time::Instant::now(),
+                        });
+                        self.needs_render = true;
+                    }
+                } else if let Some(success_msg) = &action.success_message {
+                    // Legacy support for success_message
+                    let message = globals::template_engine()
+                        .render_string(success_msg, &template_ctx)
+                        .unwrap_or_else(|_| success_msg.clone());
+
+                    self.action_message = Some(ActionMessage {
+                        message,
+                        message_type: MessageType::Success,
+                        timestamp: std::time::Instant::now(),
+                    });
+                    self.needs_render = true;
+                }
+
                 // Reload the page
                 self.load_current_page().await;
             }
@@ -837,10 +1088,29 @@ impl App {
                 self.navigate_to_page(&page, context_map).await;
             }
             Err(e) => {
+                // Use custom error notification message if available for executor errors
+                let message = if let Some(notification) = &action.notification {
+                    if let Some(custom_msg) = &notification.on_failure {
+                        globals::template_engine()
+                            .render_string(custom_msg, &template_ctx)
+                            .unwrap_or_else(|_| format!("Action failed: {}", e))
+                    } else {
+                        format!("Action failed: {}", e)
+                    }
+                } else if let Some(error_msg) = &action.error_message {
+                    globals::template_engine()
+                        .render_string(error_msg, &template_ctx)
+                        .unwrap_or_else(|_| format!("Action failed: {}", e))
+                } else {
+                    format!("Action failed: {}", e)
+                };
+
                 self.action_message = Some(ActionMessage {
-                    message: format!("Action failed: {}", e),
-                    is_error: true,
+                    message,
+                    message_type: MessageType::Error,
+                    timestamp: std::time::Instant::now(),
                 });
+                self.needs_render = true;
             }
         }
     }
@@ -909,6 +1179,7 @@ impl App {
             if matches!(page.view, ConfigView::Text(_)) {
                 // Text view: scroll down by one line
                 self.scroll_offset += 1;
+                self.needs_render = true;
                 return;
             }
         }
@@ -929,6 +1200,7 @@ impl App {
 
         if self.selected_index < max_index {
             self.selected_index += 1;
+            self.needs_render = true;
 
             // In stream mode, check if we moved away from the bottom
             // If we're now at the bottom, resume follow; otherwise pause it
@@ -953,6 +1225,7 @@ impl App {
                 // Text view: scroll up by one line
                 if self.scroll_offset > 0 {
                     self.scroll_offset -= 1;
+                    self.needs_render = true;
                 }
                 return;
             }
@@ -960,6 +1233,7 @@ impl App {
 
         if self.selected_index > 0 {
             self.selected_index -= 1;
+            self.needs_render = true;
 
             // If in stream mode and scrolling up, pause auto-follow
             if self.stream_active {
@@ -975,11 +1249,13 @@ impl App {
             if matches!(page.view, ConfigView::Text(_)) {
                 // Text view: scroll to top
                 self.scroll_offset = 0;
+                self.needs_render = true;
                 return;
             }
         }
 
         self.selected_index = 0;
+        self.needs_render = true;
 
         // Pause auto-follow in stream mode
         if self.stream_active {
@@ -994,6 +1270,7 @@ impl App {
             if matches!(page.view, ConfigView::Text(_)) {
                 // Text view: scroll to bottom (will be clamped in render_text)
                 self.scroll_offset = usize::MAX;
+                self.needs_render = true;
                 return;
             }
         }
@@ -1004,11 +1281,13 @@ impl App {
                 self.selected_index = self.stream_buffer.len() - 1;
                 self.stream_paused = false; // Resume auto-follow when at bottom
                 self.logs_follow = true;
+                self.needs_render = true;
             }
         } else {
             // Table mode
             if !self.filtered_data.is_empty() {
                 self.selected_index = self.filtered_data.len() - 1;
+                self.needs_render = true;
             }
         }
     }
@@ -1297,7 +1576,7 @@ impl App {
             .filtered_data
             .iter()
             .enumerate()
-            .map(|(idx, item)| {
+            .map(|(_idx, item)| {
                 let cells: Vec<Cell> = table_config
                     .columns
                     .iter()
@@ -1312,6 +1591,7 @@ impl App {
                                     // Add the extracted value as "value" page context for easy access in transforms
                                     row_ctx = row_ctx
                                         .with_page_context("value".to_string(), value.clone());
+
                                     globals::template_engine()
                                         .render_string(transform, &row_ctx)
                                         .unwrap_or_else(|_| value_to_string(&value))
@@ -1329,15 +1609,8 @@ impl App {
                     })
                     .collect();
 
-                let mut row = Row::new(cells);
-                if idx == self.selected_index {
-                    row = row.style(
-                        Style::default()
-                            .bg(Color::DarkGray)
-                            .add_modifier(Modifier::BOLD),
-                    );
-                }
-                row
+                // TableState handles highlighting, no manual styling needed
+                Row::new(cells)
             })
             .collect();
 
@@ -1357,9 +1630,15 @@ impl App {
         let table = Table::new(rows, widths)
             .header(header)
             .block(Block::default().borders(Borders::ALL).title(page_title))
-            .row_highlight_style(Style::default().bg(Color::DarkGray));
+            .row_highlight_style(
+                Style::default()
+                    .bg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .highlight_symbol(">> ");
 
-        frame.render_widget(table, area);
+        // Use stateful rendering for efficient highlight updates
+        frame.render_stateful_widget(table, area, &mut self.table_state);
     }
 
     fn render_text(
@@ -1992,10 +2271,11 @@ impl App {
         use ratatui::layout::Alignment;
         use ratatui::widgets::Clear;
 
-        let color = if msg.is_error {
-            Color::Red
-        } else {
-            Color::Green
+        let (color, icon, title) = match msg.message_type {
+            MessageType::Success => (Color::Green, "✓", "Success"),
+            MessageType::Error => (Color::Red, "✗", "Error"),
+            MessageType::Info => (Color::Blue, "ℹ", "Info"),
+            MessageType::Warning => (Color::Yellow, "⚠", "Warning"),
         };
 
         // Calculate dynamic width (between 40 and 80% of screen, min 30, max 100)
@@ -2010,12 +2290,12 @@ impl App {
 
         // Calculate height based on wrapped lines (add padding + borders)
         let content_height = wrapped_lines.len() as u16;
-        let msg_height = (content_height + 4).min(area.height.saturating_sub(4)); // +4 for padding and borders
+        let msg_height = (content_height + 6).min(area.height.saturating_sub(2)); // +6 for icon, padding and borders
 
-        // Center the message box
-        let msg_width = max_width;
-        let msg_x = (area.width.saturating_sub(msg_width)) / 2;
-        let msg_y = 2;
+        // Position at top-right corner
+        let msg_width = max_width.min(50); // Limit width for top-right position
+        let msg_x = area.width.saturating_sub(msg_width + 1); // 1 char padding from right edge
+        let msg_y = 1; // 1 char from top
 
         let msg_area = Rect {
             x: msg_x,
@@ -2027,12 +2307,21 @@ impl App {
         // Clear the background area to hide content behind
         frame.render_widget(Clear, msg_area);
 
-        // Build the message text with wrapped lines
+        // Build the message text with wrapped lines and icon
         let mut message_lines = vec![Line::from("")]; // Top padding
+
+        // Add icon line
+        message_lines.push(Line::from(Span::styled(
+            format!("{} {}", icon, title),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        )));
+        message_lines.push(Line::from("")); // Spacing
+
+        // Add message lines
         for line in wrapped_lines {
             message_lines.push(Line::from(Span::styled(
                 line,
-                Style::default().fg(color).add_modifier(Modifier::BOLD),
+                Style::default().fg(Color::White),
             )));
         }
         message_lines.push(Line::from("")); // Bottom padding
@@ -2041,11 +2330,10 @@ impl App {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(color))
-                    .style(Style::default().bg(Color::Black))
-                    .title(if msg.is_error { "Error" } else { "Success" }),
+                    .border_style(Style::default().fg(color).add_modifier(Modifier::BOLD))
+                    .style(Style::default().bg(Color::Black)),
             )
-            .alignment(Alignment::Center)
+            .alignment(Alignment::Left)
             .wrap(ratatui::widgets::Wrap { trim: true });
 
         frame.render_widget(message_box, msg_area);

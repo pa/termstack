@@ -409,9 +409,19 @@ pub struct Action {
     #[serde(default)]
     pub error_message: Option<String>,
     #[serde(default)]
+    pub notification: Option<NotificationConfig>,
+    #[serde(default)]
     pub refresh: bool,
     #[serde(default)]
     pub context: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct NotificationConfig {
+    #[serde(default)]
+    pub on_success: Option<String>,
+    #[serde(default)]
+    pub on_failure: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

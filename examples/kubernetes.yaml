@@ -87,7 +87,7 @@ pages:
           transform: "{{ value | length }}"
         - path: "$.status.containerStatuses[?(@.ready==true)]"
           display: "Ready/Total"
-          transform: "{{ value | length }}/{{ status.containerStatuses | length }}"
+          transform: "{{ value | length }}/{{ value | length }}"
         - path: "$.metadata.creationTimestamp"
           display: "Age"
           transform: "{{ value | timeago }}"
@@ -117,8 +117,9 @@ pages:
             "-n",
             "{{ namespaces.metadata.name }}",
           ]
-        success_message: "Deleted pod {{ metadata.name }}"
-        error_message: "Failed to delete pod"
+        notification:
+          on_success: "Pod '{{ metadata.name }}' deleted successfully"
+          on_failure: "Failed to delete pod '{{ metadata.name }}'"
         refresh: true
       - key: "e"
         name: "Describe"
@@ -142,13 +143,13 @@ pages:
           "-n",
           "{{ namespaces.metadata.name }}",
           "-o",
-          "json",
+          "yaml",
         ]
       items: "@this"
       timeout: "30s"
     view:
       layout: text
-      syntax: json
+      syntax: yaml
       line_numbers: true
     actions:
       - key: "l"
