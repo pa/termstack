@@ -776,10 +776,12 @@ impl App {
                 }
                 KeyCode::Char(c) => {
                     self.global_search.push_char(c);
+                    self.needs_render = true;
                     return;
                 }
                 KeyCode::Backspace => {
                     self.global_search.pop_char();
+                    self.needs_render = true;
                     return;
                 }
                 KeyCode::Enter => {
@@ -789,6 +791,10 @@ impl App {
                     if !self.stream_active {
                         self.apply_sort_and_filter();
                         self.selected_index = 0;
+                    } else {
+                        // For stream views, trigger render to apply filter
+                        self.selected_index = 0;
+                        self.needs_render = true;
                     }
                     return;
                 }
@@ -799,6 +805,10 @@ impl App {
                     if !self.stream_active {
                         self.apply_sort_and_filter();
                         self.selected_index = 0;
+                    } else {
+                        // For stream views, trigger render to clear filter
+                        self.selected_index = 0;
+                        self.needs_render = true;
                     }
                     return;
                 }
@@ -866,6 +876,7 @@ impl App {
                         self.logs_follow = false;
                         // Take a snapshot of the current buffer
                         self.stream_frozen_snapshot = self.stream_buffer.clone();
+                        self.needs_render = true; // Force render to update status indicator
                     }
                 }
             }
