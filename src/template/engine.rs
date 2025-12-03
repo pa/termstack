@@ -106,7 +106,11 @@ impl TemplateContext {
         // Add current row data
         if let Some(current) = &self.current {
             context.insert("row", current);
-            context.insert("value", current);
+
+            // Only insert "value" if not already set by page_contexts
+            if !context.contains_key("value") {
+                context.insert("value", current);
+            }
 
             // Also flatten current object fields to top level for convenience
             if let Value::Object(map) = current {

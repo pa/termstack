@@ -31,7 +31,7 @@ pages:
           display: "Status"
         - path: "$.metadata.creationTimestamp"
           display: "Age"
-          transform: "{{ metadata.creationTimestamp | timeago }}"
+          transform: "{{ value | timeago }}"
       sort:
         column: "$.metadata.name"
         order: asc
