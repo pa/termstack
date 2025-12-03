@@ -167,6 +167,7 @@ pub struct App {
     stream_active: bool,
     stream_paused: bool,
     stream_buffer: VecDeque<String>,
+    stream_frozen_snapshot: VecDeque<String>, // Frozen snapshot when paused
     stream_receiver: Option<mpsc::Receiver<StreamMessage>>,
     stream_status: StreamStatus,
 
@@ -250,6 +251,7 @@ impl App {
             stream_active: false,
             stream_paused: false,
             stream_buffer: VecDeque::new(),
+            stream_frozen_snapshot: VecDeque::new(),
             stream_receiver: None,
             stream_status: StreamStatus::Idle,
             logs_follow: true,
@@ -302,7 +304,8 @@ impl App {
                 if let Event::Key(key) = event::read()? {
                     if key.kind == KeyEventKind::Press {
                         self.handle_key(key).await;
-                        self.needs_render = true; // User input requires re-render
+                        // Don't auto-render on every key press - let handlers decide
+                        // This allows pause mode to truly freeze the display
                     }
                 }
             }
@@ -540,12 +543,16 @@ impl App {
                             self.stream_buffer.pop_front();
                         }
 
-                        // Auto-scroll to bottom if follow is enabled and not paused
-                        if self.logs_follow && !self.stream_paused {
-                            self.selected_index = self.stream_buffer.len().saturating_sub(1);
+                        // Only trigger render and update position when NOT paused
+                        if !self.stream_paused {
+                            // Auto-scroll to bottom if follow is enabled
+                            if self.logs_follow {
+                                self.selected_index = self.stream_buffer.len().saturating_sub(1);
+                            }
+                            self.needs_render = true;
                         }
-
-                        self.needs_render = true;
+                        // When paused: buffer is updated but NO render triggered
+                        // View stays frozen on the same content
                     }
                     StreamMessage::End => {
                         self.stream_status = StreamStatus::Stopped;
@@ -809,11 +816,13 @@ impl App {
             KeyCode::Char('q') => {
                 // Always show quit confirmation
                 self.show_quit_confirm = true;
+                self.needs_render = true;
             }
             KeyCode::Esc => {
                 // If in action mode, exit action mode first
                 if self.action_mode {
                     self.action_mode = false;
+                    self.needs_render = true;
                 }
                 // If search filter is active, clear it first
                 else if self.global_search.filter_active {
@@ -823,6 +832,7 @@ impl App {
                         self.apply_sort_and_filter();
                         self.selected_index = 0;
                     }
+                    self.needs_render = true;
                 } else if !self.nav_stack.is_empty() {
                     self.go_back().await;
                 }
@@ -835,20 +845,27 @@ impl App {
             KeyCode::Char('/') => {
                 // Activate global search
                 self.global_search.activate();
+                self.needs_render = true;
             }
             KeyCode::Char('f') => {
-                // Toggle follow in logs view
+                // Toggle follow in logs view (when paused, 'f' resumes LIVE mode)
                 if self.stream_active {
-                    self.logs_follow = !self.logs_follow;
-                    if self.logs_follow {
-                        // Re-enabling follow: jump to bottom and resume
+                    if self.stream_paused {
+                        // Currently paused, resume to LIVE
                         self.stream_paused = false;
+                        self.logs_follow = true;
+                        // Clear the frozen snapshot
+                        self.stream_frozen_snapshot.clear();
                         if !self.stream_buffer.is_empty() {
                             self.selected_index = self.stream_buffer.len() - 1;
                         }
+                        self.needs_render = true; // Force render when resuming
                     } else {
-                        // Disabling follow: pause at current position
+                        // Currently live, pause at current position
                         self.stream_paused = true;
+                        self.logs_follow = false;
+                        // Take a snapshot of the current buffer
+                        self.stream_frozen_snapshot = self.stream_buffer.clone();
                     }
                 }
             }
@@ -860,18 +877,24 @@ impl App {
                     if self.logs_wrap {
                         self.logs_horizontal_scroll = 0;
                     }
+                    // Always render user actions, even when paused
+                    self.needs_render = true;
                 }
             }
             KeyCode::Left => {
                 // Scroll left in logs view (when wrap is off)
                 if self.stream_active && !self.logs_wrap {
                     self.logs_horizontal_scroll = self.logs_horizontal_scroll.saturating_sub(5);
+                    // Always render user actions, even when paused
+                    self.needs_render = true;
                 }
             }
             KeyCode::Right => {
                 // Scroll right in logs view (when wrap is off)
                 if self.stream_active && !self.logs_wrap {
                     self.logs_horizontal_scroll = self.logs_horizontal_scroll.saturating_add(5);
+                    // Always render user actions, even when paused
+                    self.needs_render = true;
                 }
             }
             KeyCode::Char('h') => {
@@ -882,6 +905,7 @@ impl App {
                 } else if self.stream_active && !self.logs_wrap {
                     // Normal mode: horizontal scroll left in logs view
                     self.logs_horizontal_scroll = self.logs_horizontal_scroll.saturating_sub(5);
+                    // Always render user actions, even when paused
                     self.needs_render = true;
                 }
             }
@@ -893,6 +917,7 @@ impl App {
                 } else if self.stream_active && !self.logs_wrap {
                     // Normal mode: horizontal scroll right in logs view
                     self.logs_horizontal_scroll = self.logs_horizontal_scroll.saturating_add(5);
+                    // Always render user actions, even when paused
                     self.needs_render = true;
                 }
             }
@@ -910,6 +935,7 @@ impl App {
                 // Enter action mode (never conflicts because 'a' is the action mode trigger)
                 if !self.action_mode {
                     self.action_mode = true;
+                    self.needs_render = true;
                 }
             }
             KeyCode::Char(c) => {
@@ -1198,11 +1224,17 @@ impl App {
         }
 
         let max_index = if self.stream_active || !self.stream_buffer.is_empty() {
-            // Stream mode: use buffer
-            if self.stream_buffer.is_empty() {
+            // Stream mode: use display buffer (frozen snapshot if paused)
+            let display_buffer_len =
+                if self.stream_paused && !self.stream_frozen_snapshot.is_empty() {
+                    self.stream_frozen_snapshot.len()
+                } else {
+                    self.stream_buffer.len()
+                };
+            if display_buffer_len == 0 {
                 return;
             }
-            self.stream_buffer.len() - 1
+            display_buffer_len - 1
         } else {
             // Table mode: use filtered data
             if self.filtered_data.is_empty() {
@@ -1213,21 +1245,8 @@ impl App {
 
         if self.selected_index < max_index {
             self.selected_index += 1;
+            // Always render cursor movement, even when paused
             self.needs_render = true;
-
-            // In stream mode, check if we moved away from the bottom
-            // If we're now at the bottom, resume follow; otherwise pause it
-            if self.stream_active {
-                if self.selected_index >= self.stream_buffer.len() - 1 {
-                    // At the bottom, resume auto-follow
-                    self.stream_paused = false;
-                    self.logs_follow = true;
-                } else {
-                    // Not at bottom, pause auto-follow
-                    self.stream_paused = true;
-                    self.logs_follow = false;
-                }
-            }
         }
     }
 
@@ -1246,13 +1265,8 @@ impl App {
 
         if self.selected_index > 0 {
             self.selected_index -= 1;
+            // Always render cursor movement, even when paused
             self.needs_render = true;
-
-            // If in stream mode and scrolling up, pause auto-follow
-            if self.stream_active {
-                self.stream_paused = true;
-                self.logs_follow = false;
-            }
         }
     }
 
@@ -1268,13 +1282,8 @@ impl App {
         }
 
         self.selected_index = 0;
+        // Always render cursor movement, even when paused
         self.needs_render = true;
-
-        // Pause auto-follow in stream mode
-        if self.stream_active {
-            self.stream_paused = true;
-            self.logs_follow = false;
-        }
     }
 
     fn move_bottom(&mut self) {
@@ -1289,11 +1298,17 @@ impl App {
         }
 
         if self.stream_active || !self.stream_buffer.is_empty() {
-            // Stream mode
-            if !self.stream_buffer.is_empty() {
-                self.selected_index = self.stream_buffer.len() - 1;
-                self.stream_paused = false; // Resume auto-follow when at bottom
-                self.logs_follow = true;
+            // Stream mode - jumping to bottom does NOT change pause state
+            // Use display buffer (frozen snapshot if paused)
+            let display_buffer_len =
+                if self.stream_paused && !self.stream_frozen_snapshot.is_empty() {
+                    self.stream_frozen_snapshot.len()
+                } else {
+                    self.stream_buffer.len()
+                };
+            if display_buffer_len > 0 {
+                self.selected_index = display_buffer_len - 1;
+                // Always render cursor movement, even when paused
                 self.needs_render = true;
             }
         } else {
@@ -1938,7 +1953,14 @@ impl App {
 
         // For streaming logs, render from stream buffer
         if self.stream_active || !self.stream_buffer.is_empty() {
-            if self.stream_buffer.is_empty() {
+            // Use frozen snapshot when paused, otherwise use live buffer
+            let display_buffer = if self.stream_paused && !self.stream_frozen_snapshot.is_empty() {
+                &self.stream_frozen_snapshot
+            } else {
+                &self.stream_buffer
+            };
+
+            if display_buffer.is_empty() {
                 let empty = Paragraph::new("Waiting for data...")
                     .style(Style::default().fg(Color::Yellow))
                     .block(Block::default().borders(Borders::ALL).title(page_title));
@@ -1948,7 +1970,7 @@ impl App {
 
             // Filter logs using global search if active
             let filtered_indices: Vec<usize> = if self.global_search.filter_active {
-                self.stream_buffer
+                display_buffer
                     .iter()
                     .enumerate()
                     .filter(|(_, line)| self.global_search.matches(line))
@@ -1956,7 +1978,7 @@ impl App {
                     .collect()
             } else {
                 // No filter, use all indices
-                (0..self.stream_buffer.len()).collect()
+                (0..display_buffer.len()).collect()
             };
 
             // Calculate visible area
@@ -1964,14 +1986,14 @@ impl App {
 
             // When follow is enabled, ensure we stay at the bottom of the buffer
             if self.logs_follow && !self.stream_paused {
-                if !self.stream_buffer.is_empty() {
-                    self.selected_index = self.stream_buffer.len() - 1;
+                if !display_buffer.is_empty() {
+                    self.selected_index = display_buffer.len() - 1;
                 }
             }
 
-            // Ensure selected_index is within bounds of the actual buffer
-            if !self.stream_buffer.is_empty() {
-                self.selected_index = self.selected_index.min(self.stream_buffer.len() - 1);
+            // Ensure selected_index is within bounds of the display buffer
+            if !display_buffer.is_empty() {
+                self.selected_index = self.selected_index.min(display_buffer.len() - 1);
             }
 
             // Find the position of selected_index in the filtered list
@@ -2003,7 +2025,7 @@ impl App {
                 }
 
                 let actual_idx = filtered_indices[i];
-                let line = &self.stream_buffer[actual_idx];
+                let line = &display_buffer[actual_idx];
                 let display_line = line.clone();
 
                 // Parse ANSI codes to preserve colors
@@ -2100,7 +2122,7 @@ impl App {
                 title_parts.push(format!(
                     " ({}/{})",
                     filtered_indices.len(),
-                    self.stream_buffer.len()
+                    display_buffer.len()
                 ));
             }
 
@@ -2163,9 +2185,9 @@ impl App {
     fn render_statusbar(&self, frame: &mut Frame, area: Rect) {
         // Build navigation shortcuts (always shown)
         let nav_shortcuts = if self.stream_active && !self.logs_wrap {
-            "j/k: Scroll  |  h/l: Side-scroll  |  g/G: Top/Bottom  |  /: Search  |  f: Follow  |  w: Wrap  |  ESC: Back  |  q: Quit"
+            "j/k: Scroll  |  h/l: Side-scroll  |  g/G: Top/Bottom  |  /: Search  |  f: LIVE/Pause  |  w: Wrap  |  ESC: Back  |  q: Quit"
         } else if self.stream_active {
-            "j/k: Scroll  |  g/G: Top/Bottom  |  /: Search  |  f: Follow  |  w: Wrap  |  ESC: Back  |  q: Quit"
+            "j/k: Scroll  |  g/G: Top/Bottom  |  /: Search  |  f: LIVE/Pause  |  w: Wrap  |  ESC: Back  |  q: Quit"
         } else if self.current_data.is_empty() {
             "q/ESC: Quit  |  r: Refresh"
         } else {
@@ -2173,11 +2195,17 @@ impl App {
         };
 
         let row_info = if self.stream_active {
+            // Use frozen snapshot size when paused, otherwise use live buffer
+            let buffer_len = if self.stream_paused && !self.stream_frozen_snapshot.is_empty() {
+                self.stream_frozen_snapshot.len()
+            } else {
+                self.stream_buffer.len()
+            };
             format!(
                 "Lines: {} | Line {}/{}",
-                self.stream_buffer.len(),
+                buffer_len,
                 self.selected_index + 1,
-                self.stream_buffer.len()
+                buffer_len
             )
         } else if self.global_search.filter_active {
             format!(
