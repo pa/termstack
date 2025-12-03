@@ -875,37 +875,50 @@ impl App {
                 }
             }
             KeyCode::Char('h') => {
-                // Scroll left in logs view (when wrap is off)
-                if self.stream_active && !self.logs_wrap {
-                    self.logs_horizontal_scroll = self.logs_horizontal_scroll.saturating_sub(5);
-                } else {
-                    // Not in scroll mode, check for action keybindings
+                // In action mode: treat as action key
+                if self.action_mode {
+                    self.action_mode = false;
                     self.handle_action_key('h').await;
+                } else if self.stream_active && !self.logs_wrap {
+                    // Normal mode: horizontal scroll left in logs view
+                    self.logs_horizontal_scroll = self.logs_horizontal_scroll.saturating_sub(5);
+                    self.needs_render = true;
                 }
             }
             KeyCode::Char('l') => {
-                // Scroll right in logs view (when wrap is off)
-                if self.stream_active && !self.logs_wrap {
-                    self.logs_horizontal_scroll = self.logs_horizontal_scroll.saturating_add(5);
-                } else {
-                    // Not in scroll mode, check for action keybindings
+                // In action mode: treat as action key
+                if self.action_mode {
+                    self.action_mode = false;
                     self.handle_action_key('l').await;
+                } else if self.stream_active && !self.logs_wrap {
+                    // Normal mode: horizontal scroll right in logs view
+                    self.logs_horizontal_scroll = self.logs_horizontal_scroll.saturating_add(5);
+                    self.needs_render = true;
                 }
             }
-            KeyCode::Enter => self.navigate_next().await,
+            KeyCode::Enter => {
+                // In action mode: treat as action key
+                if self.action_mode {
+                    self.action_mode = false;
+                    self.handle_action_key('\n').await;
+                } else {
+                    // Normal mode: navigate to next page
+                    self.navigate_next().await;
+                }
+            }
             KeyCode::Char('a') => {
-                // Enter action mode
+                // Enter action mode (never conflicts because 'a' is the action mode trigger)
                 if !self.action_mode {
                     self.action_mode = true;
                 }
             }
             KeyCode::Char(c) => {
-                // If in action mode, handle as action key
+                // In action mode: ANY character is an action key
                 if self.action_mode {
-                    self.action_mode = false; // Exit action mode
+                    self.action_mode = false;
                     self.handle_action_key(c).await;
                 }
-                // Otherwise, ignore non-mapped keys
+                // Normal mode: ignore unmapped keys (no conflict)
             }
             _ => {}
         }
