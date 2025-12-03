@@ -2291,22 +2291,24 @@ impl App {
             MessageType::Warning => (Color::Yellow, "⚠", "Warning"),
         };
 
-        // Calculate dynamic width (between 40 and 80% of screen, min 30, max 100)
-        let max_width = ((area.width as f32 * 0.8) as u16)
-            .min(area.width.saturating_sub(4))
-            .max(30);
+        // Calculate dynamic width based on message length
+        let icon_title_len = icon.chars().count() + 1 + title.len(); // icon + space + title
+        let message_len = msg.message.chars().count();
+        let max_line_len = icon_title_len.max(message_len);
+
+        // Dynamic width: fit content + borders (2) + padding (4)
+        let content_width = max_line_len.min(60); // Max 60 chars for readability
+        let msg_width = (content_width + 6) as u16; // +6 for borders and padding
 
         // Word wrap the message to fit within the width
-        // Account for borders (2 chars) and padding (2 chars)
-        let content_width = max_width.saturating_sub(4) as usize;
         let wrapped_lines = Self::wrap_text(&msg.message, content_width);
 
-        // Calculate height based on wrapped lines (add padding + borders)
+        // Calculate height based on wrapped lines
+        // icon line + spacing + message lines + padding + borders
         let content_height = wrapped_lines.len() as u16;
-        let msg_height = (content_height + 6).min(area.height.saturating_sub(2)); // +6 for icon, padding and borders
+        let msg_height = (content_height + 6).min(area.height.saturating_sub(2)); // +6 for icon, spacing, padding, borders
 
         // Position at top-right corner
-        let msg_width = max_width.min(50); // Limit width for top-right position
         let msg_x = area.width.saturating_sub(msg_width + 1); // 1 char padding from right edge
         let msg_y = 1; // 1 char from top
 
