@@ -21,9 +21,9 @@ pages:
       args: ["get", "namespaces", "-o", "json"]
       items: "$.items[*]"
       timeout: "30s"
-      refresh_interval: "1s"
+      refresh_interval: "60s"
     view:
-      layout: table
+      type: table
       columns:
         - path: "$.metadata.name"
           display: "Name"
@@ -74,7 +74,7 @@ pages:
       timeout: "30s"
       refresh_interval: "5s"
     view:
-      layout: table
+      type: table
       columns:
         - path: "$.metadata.name"
           display: "Name"
@@ -148,7 +148,7 @@ pages:
       items: "@this"
       timeout: "30s"
     view:
-      layout: text
+      type: text
       syntax: yaml
       line_numbers: true
     actions:
@@ -183,7 +183,7 @@ pages:
       buffer_time: "15m"
       follow: true
     view:
-      layout: logs
+      type: logs
       follow: true
       wrap: true
       show_timestamps: false
@@ -208,7 +208,7 @@ pages:
       items: "@this"
       timeout: "30s"
     view:
-      layout: text
+      type: text
       line_numbers: true
 
   # ============================================================================
@@ -233,7 +233,7 @@ pages:
       timeout: "30s"
       refresh_interval: "10s"
     view:
-      layout: table
+      type: table
       columns:
         - path: "$.metadata.name"
           display: "Name"
@@ -324,7 +324,7 @@ pages:
       items: "@this"
       timeout: "30s"
     view:
-      layout: text
+      type: text
       syntax: json
       line_numbers: true
     actions:
@@ -356,7 +356,7 @@ pages:
       items: "$.items[*]"
       timeout: "30s"
     view:
-      layout: table
+      type: table
       columns:
         - path: "$.metadata.name"
           display: "Name"
@@ -391,7 +391,7 @@ pages:
       items: "$.items[*]"
       timeout: "30s"
     view:
-      layout: table
+      type: table
       columns:
         - path: "$.metadata.name"
           display: "Name"
@@ -447,6 +447,6 @@ pages:
       items: "@this"
       timeout: "30s"
     view:
-      layout: text
+      type: text
       syntax: yaml
       line_numbers: true

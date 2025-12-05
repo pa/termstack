@@ -752,6 +752,7 @@ impl App {
                 }
                 KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
                     self.action_confirm = None;
+                    self.needs_render = true;
                 }
                 _ => {}
             }
@@ -766,6 +767,7 @@ impl App {
                 }
                 KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
                     self.show_quit_confirm = false;
+                    self.needs_render = true;
                 }
                 _ => {}
             }

@@ -232,7 +232,7 @@ impl Default for HttpMethod {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(tag = "layout", rename_all = "lowercase")]
+#[serde(tag = "type", rename_all = "lowercase")]
 pub enum View {
     Table(TableView),
     Logs(LogsView),
