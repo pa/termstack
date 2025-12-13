@@ -1566,7 +1566,7 @@ impl App {
             .collect();
         let header = Row::new(header_cells).height(1);
 
-        // Build rows
+        // Build rows with styling
         let _ctx = self.create_template_context(None);
         let rows: Vec<Row> = self
             .filtered_data
@@ -1578,35 +1578,43 @@ impl App {
                     .iter()
                     .map(|col| {
                         // Extract value using JSONPath
-                        let value_str = if let Ok(extractor) = JsonPathExtractor::new(&col.path) {
-                            if let Ok(Some(value)) = extractor.extract_single(item) {
-                                // Apply transform if present
-                                if let Some(transform) = &col.transform {
-                                    // Create context with full row for transform
-                                    let mut row_ctx = self.create_template_context(Some(item));
-                                    // Add the extracted value as "value" page context for easy access in transforms
-                                    row_ctx = row_ctx
-                                        .with_page_context("value".to_string(), value.clone());
+                        let (value_str, extracted_value) =
+                            if let Ok(extractor) = JsonPathExtractor::new(&col.path) {
+                                if let Ok(Some(value)) = extractor.extract_single(item) {
+                                    // Apply transform if present
+                                    let display_str = if let Some(transform) = &col.transform {
+                                        // Create context with full row for transform
+                                        let mut row_ctx = self.create_template_context(Some(item));
+                                        // Add the extracted value as "value" page context for easy access in transforms
+                                        row_ctx = row_ctx
+                                            .with_page_context("value".to_string(), value.clone());
+                                        // Also add the full row as "row" for conditions
+                                        row_ctx = row_ctx
+                                            .with_page_context("row".to_string(), item.clone());
 
-                                    globals::template_engine()
-                                        .render_string(transform, &row_ctx)
-                                        .unwrap_or_else(|_| value_to_string(&value))
+                                        globals::template_engine()
+                                            .render_string(transform, &row_ctx)
+                                            .unwrap_or_else(|_| value_to_string(&value))
+                                    } else {
+                                        value_to_string(&value)
+                                    };
+                                    (display_str, Some(value))
                                 } else {
-                                    value_to_string(&value)
+                                    ("".to_string(), None)
                                 }
                             } else {
-                                "".to_string()
-                            }
-                        } else {
-                            "".to_string()
-                        };
+                                ("".to_string(), None)
+                            };
 
-                        Cell::from(value_str)
+                        // Apply column styling
+                        let cell_style = self.apply_column_style(col, &extracted_value, item);
+                        Cell::from(value_str).style(cell_style)
                     })
                     .collect();
 
-                // TableState handles highlighting, no manual styling needed
-                Row::new(cells)
+                // Apply row-level styling
+                let row_style = self.apply_row_style(table_config, item);
+                Row::new(cells).style(row_style)
             })
             .collect();
 
@@ -1635,6 +1643,127 @@ impl App {
 
         // Use stateful rendering for efficient highlight updates
         frame.render_stateful_widget(table, area, &mut self.table_state);
+    }
+
+    /// Apply column-level conditional styling
+    fn apply_column_style(
+        &self,
+        col: &crate::config::TableColumn,
+        value: &Option<Value>,
+        row: &Value,
+    ) -> Style {
+        let mut style = Style::default();
+
+        // Find the first matching style rule
+        for style_rule in &col.style {
+            let matches = if let Some(condition) = &style_rule.condition {
+                // Evaluate condition template
+                let mut ctx = self.create_template_context(Some(row));
+                if let Some(val) = value {
+                    ctx = ctx.with_page_context("value".to_string(), val.clone());
+                }
+                ctx = ctx.with_page_context("row".to_string(), row.clone());
+
+                globals::template_engine()
+                    .render_string(condition, &ctx)
+                    .map(|result| result.trim() == "true")
+                    .unwrap_or(false)
+            } else if style_rule.default {
+                true
+            } else {
+                false
+            };
+
+            if matches {
+                // Apply this style
+                if let Some(color_str) = &style_rule.color {
+                    if let Some(color) = Self::parse_color(color_str) {
+                        style = style.fg(color);
+                    }
+                }
+                if let Some(bg_str) = &style_rule.bg {
+                    if let Some(bg_color) = Self::parse_color(bg_str) {
+                        style = style.bg(bg_color);
+                    }
+                }
+                if style_rule.bold {
+                    style = style.add_modifier(Modifier::BOLD);
+                }
+                if style_rule.dim {
+                    style = style.add_modifier(Modifier::DIM);
+                }
+                break; // Use first matching rule
+            }
+        }
+
+        style
+    }
+
+    /// Apply row-level conditional styling
+    fn apply_row_style(&self, table_config: &crate::config::TableView, row: &Value) -> Style {
+        let mut style = Style::default();
+
+        // Find the first matching row style rule
+        for style_rule in &table_config.row_style {
+            let matches = if let Some(condition) = &style_rule.condition {
+                // Evaluate condition template
+                let ctx = self.create_template_context(Some(row));
+                globals::template_engine()
+                    .render_string(condition, &ctx)
+                    .map(|result| result.trim() == "true")
+                    .unwrap_or(false)
+            } else if style_rule.default {
+                true
+            } else {
+                false
+            };
+
+            if matches {
+                // Apply this style
+                if let Some(color_str) = &style_rule.color {
+                    if let Some(color) = Self::parse_color(color_str) {
+                        style = style.fg(color);
+                    }
+                }
+                if let Some(bg_str) = &style_rule.bg {
+                    if let Some(bg_color) = Self::parse_color(bg_str) {
+                        style = style.bg(bg_color);
+                    }
+                }
+                if style_rule.bold {
+                    style = style.add_modifier(Modifier::BOLD);
+                }
+                if style_rule.dim {
+                    style = style.add_modifier(Modifier::DIM);
+                }
+                break; // Use first matching rule
+            }
+        }
+
+        style
+    }
+
+    /// Parse color string to ratatui Color
+    fn parse_color(color_str: &str) -> Option<Color> {
+        match color_str.to_lowercase().as_str() {
+            "black" => Some(Color::Black),
+            "red" => Some(Color::Red),
+            "green" => Some(Color::Green),
+            "yellow" => Some(Color::Yellow),
+            "blue" => Some(Color::Blue),
+            "magenta" => Some(Color::Magenta),
+            "cyan" => Some(Color::Cyan),
+            "gray" | "grey" => Some(Color::Gray),
+            "darkgray" | "darkgrey" => Some(Color::DarkGray),
+            "lightred" => Some(Color::LightRed),
+            "lightgreen" => Some(Color::LightGreen),
+            "lightyellow" => Some(Color::LightYellow),
+            "lightblue" => Some(Color::LightBlue),
+            "lightmagenta" => Some(Color::LightMagenta),
+            "lightcyan" => Some(Color::LightCyan),
+            "white" => Some(Color::White),
+            _ => None,
+        }
     }
 
     fn render_text(

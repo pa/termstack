@@ -1,0 +1,53 @@
+version: v1
+
+app:
+  name: "Style Test"
+
+start: items
+
+pages:
+  items:
+    title: "Styled Items Test"
+    data:
+      adapter: cli
+      command: "echo"
+      args: ['{"items": [{"name": "Running Pod", "status": "Running", "count": 5}, {"name": "Failed Pod", "status": "Failed", "count": 0}, {"name": "Pending Pod", "status": "Pending", "count": 3}]}']
+      items: "$.items[*]"
+    view:
+      type: table
+      columns:
+        - path: "$.name"
+          display: "Name"
+          width: 30
+          style:
+            - default: true
+              color: cyan
+              bold: true
+        - path: "$.status"
+          display: "Status"
+          width: 15
+          style:
+            - condition: "{{ value == 'Running' }}"
+              color: green
+              bold: true
+            - condition: "{{ value == 'Failed' }}"
+              color: red
+              bold: true
+            - condition: "{{ value == 'Pending' }}"
+              color: yellow
+            - default: true
+              color: white
+        - path: "$.count"
+          display: "Count"
+          width: 10
+          style:
+            - condition: "{{ value == '0' }}"
+              color: red
+            - default: true
+              color: blue
+      row_style:
+        - condition: "{{ status == 'Failed' }}"
+          color: red
+          dim: true
+        - condition: "{{ status == 'Pending' }}"
+          dim: true

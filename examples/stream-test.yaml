@@ -1,0 +1,22 @@
+version: v1
+
+app:
+  name: "Stream Test"
+  description: "Test streaming functionality"
+
+start: ping_stream
+
+pages:
+  ping_stream:
+    title: "Ping Test - Streaming"
+    description: "Stream ping output in real-time"
+    data:
+      type: stream
+      command: "ping"
+      args: ["-c", "50", "8.8.8.8"]
+      buffer_size: 20
+      follow: true
+    view:
+      type: logs
+      follow: false
+      wrap: true

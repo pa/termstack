@@ -27,14 +27,35 @@ pages:
       columns:
         - path: "$.metadata.name"
           display: "Name"
+          width: 40
+          style:
+            - default: true
+              color: cyan
+              bold: true
         - path: "$.status.phase"
           display: "Status"
+          width: 15
+          style:
+            - condition: "{{ value == 'Active' }}"
+              color: green
+              bold: true
+            - condition: "{{ value == 'Terminating' }}"
+              color: yellow
+            - default: true
+              color: red
         - path: "$.metadata.creationTimestamp"
           display: "Age"
+          width: 20
           transform: "{{ value | timeago }}"
+          style:
+            - default: true
+              color: gray
       sort:
         column: "$.metadata.name"
         order: asc
+      row_style:
+        - condition: "{{ status.phase == 'Terminating' }}"
+          dim: true
     next:
       page: pods
       context:
@@ -58,6 +79,12 @@ pages:
         page: services
         context:
           namespace: "$.metadata.name"
+      - key: "r"
+        name: "RBAC"
+        description: "View RBAC resources"
+        page: rbac_overview
+        context:
+          namespace: "$.metadata.name"
 
   # ============================================================================
   # PODS - List pods in selected namespace
@@ -78,19 +105,69 @@ pages:
       columns:
         - path: "$.metadata.name"
           display: "Name"
+          width: 45
+          style:
+            - default: true
+              color: cyan
         - path: "$.status.phase"
           display: "Status"
+          width: 12
+          style:
+            - condition: "{{ value == 'Running' }}"
+              color: green
+              bold: true
+            - condition: "{{ value == 'Pending' }}"
+              color: yellow
+            - condition: "{{ value == 'Succeeded' }}"
+              color: blue
+            - condition: "{{ value == 'Failed' }}"
+              color: red
+              bold: true
+            - condition: "{{ value == 'Unknown' }}"
+              color: magenta
+            - default: true
+              color: white
         - path: "$.status.conditions[?(@.type=='Ready')].status"
           display: "Ready"
+          width: 8
+          style:
+            - condition: "{{ value == 'True' }}"
+              color: green
+            - condition: "{{ value == 'False' }}"
+              color: red
+            - default: true
+              color: yellow
         - path: "$.spec.containers[*].name"
           display: "Containers"
           transform: "{{ value | length }}"
+          width: 12
+          style:
+            - default: true
+              color: blue
         - path: "$.status.containerStatuses[?(@.ready==true)]"
           display: "Ready/Total"
-          transform: "{{ value | length }}/{{ value | length }}"
+          transform: "{{ value | length }}/{{ row.status.containerStatuses | length }}"
+          width: 12
+          style:
+            - condition: "{{ value | length == row.status.containerStatuses | length }}"
+              color: green
+            - default: true
+              color: yellow
         - path: "$.metadata.creationTimestamp"
           display: "Age"
           transform: "{{ value | timeago }}"
+          width: 15
+          style:
+            - default: true
+              color: gray
+      row_style:
+        - condition: "{{ status.phase == 'Failed' }}"
+          color: red
+          dim: true
+        - condition: "{{ status.phase == 'Pending' }}"
+          dim: true
+        - condition: "{{ status.phase == 'Running' }}"
+          default: true
     next:
       page: pod_detail
       context:
@@ -162,7 +239,7 @@ pages:
         builtin: yaml_view
 
   # ============================================================================
-  # POD LOGS - Stream pod logs (Phase 2 - using detail view for now)
+  # POD LOGS - Stream pod logs
   # ============================================================================
   pod_logs:
     title: "Logs - {{ pods.metadata.name }}"
@@ -237,17 +314,54 @@ pages:
       columns:
         - path: "$.metadata.name"
           display: "Name"
+          width: 35
+          style:
+            - default: true
+              color: cyan
+              bold: true
         - path: "$.spec.replicas"
           display: "Desired"
+          width: 10
+          style:
+            - default: true
+              color: blue
         - path: "$.status.availableReplicas"
           display: "Available"
+          width: 12
+          style:
+            - condition: "{{ value == row.spec.replicas }}"
+              color: green
+              bold: true
+            - condition: "{{ value > 0 }}"
+              color: yellow
+            - default: true
+              color: red
         - path: "$.status.readyReplicas"
           display: "Ready"
+          width: 10
+          style:
+            - condition: "{{ value == row.spec.replicas }}"
+              color: green
+            - default: true
+              color: yellow
         - path: "$.status.updatedReplicas"
           display: "Updated"
+          width: 10
+          style:
+            - condition: "{{ value == row.spec.replicas }}"
+              color: green
+            - default: true
+              color: cyan
         - path: "$.metadata.creationTimestamp"
           display: "Age"
           transform: "{{ value | timeago }}"
+          width: 15
+          style:
+            - default: true
+              color: gray
+      row_style:
+        - condition: "{{ status.availableReplicas != spec.replicas }}"
+          color: yellow
     next:
       page: deployment_detail
       context:
@@ -360,11 +474,28 @@ pages:
       columns:
         - path: "$.metadata.name"
           display: "Name"
+          width: 50
+          style:
+            - default: true
+              color: cyan
         - path: "$.status.phase"
           display: "Status"
+          width: 12
+          style:
+            - condition: "{{ value == 'Running' }}"
+              color: green
+              bold: true
+            - condition: "{{ value == 'Pending' }}"
+              color: yellow
+            - default: true
+              color: red
         - path: "$.metadata.creationTimestamp"
           display: "Age"
           transform: "{{ value | timeago }}"
+          width: 15
+          style:
+            - default: true
+              color: gray
     next:
       page: pod_detail
       context:
@@ -395,15 +526,43 @@ pages:
       columns:
         - path: "$.metadata.name"
           display: "Name"
+          width: 30
+          style:
+            - default: true
+              color: cyan
+              bold: true
         - path: "$.spec.type"
           display: "Type"
+          width: 15
+          style:
+            - condition: "{{ value == 'LoadBalancer' }}"
+              color: magenta
+              bold: true
+            - condition: "{{ value == 'NodePort' }}"
+              color: yellow
+            - condition: "{{ value == 'ClusterIP' }}"
+              color: blue
+            - default: true
+              color: white
         - path: "$.spec.clusterIP"
           display: "Cluster IP"
+          width: 18
+          style:
+            - default: true
+              color: green
         - path: "$.spec.ports[*].port"
           display: "Ports"
+          width: 20
+          style:
+            - default: true
+              color: blue
         - path: "$.metadata.creationTimestamp"
           display: "Age"
           transform: "{{ value | timeago }}"
+          width: 15
+          style:
+            - default: true
+              color: gray
     next:
       page: service_detail
       context:
@@ -444,6 +603,263 @@ pages:
           "-o",
           "yaml",
         ]
+      items: "@this"
+      timeout: "30s"
+    view:
+      type: text
+      syntax: yaml
+      line_numbers: true
+
+  # ============================================================================
+  # RBAC OVERVIEW - Show RBAC resources
+  # ============================================================================
+  rbac_overview:
+    title: "RBAC - {{ namespaces.metadata.name }}"
+    description: "Role-Based Access Control resources"
+    data:
+      adapter: cli
+      command: "kubectl"
+      args:
+        [
+          "get",
+          "roles,rolebindings",
+          "-n",
+          "{{ namespaces.metadata.name }}",
+          "-o",
+          "json",
+        ]
+      items: "$.items[*]"
+      timeout: "30s"
+    view:
+      type: table
+      columns:
+        - path: "$.kind"
+          display: "Kind"
+          width: 15
+          style:
+            - condition: "{{ value == 'Role' }}"
+              color: yellow
+              bold: true
+            - condition: "{{ value == 'RoleBinding' }}"
+              color: magenta
+              bold: true
+            - default: true
+              color: cyan
+        - path: "$.metadata.name"
+          display: "Name"
+          width: 40
+          style:
+            - default: true
+              color: cyan
+        - path: "$.metadata.creationTimestamp"
+          display: "Age"
+          transform: "{{ value | timeago }}"
+          width: 20
+          style:
+            - default: true
+              color: gray
+    next:
+      page: rbac_detail
+      context:
+        rbac_kind: "$.kind"
+        rbac_name: "$.metadata.name"
+    actions:
+      - key: "r"
+        name: "Roles"
+        description: "View roles only"
+        page: roles
+        context:
+          namespace: "{{ namespaces.metadata.name }}"
+      - key: "b"
+        name: "RoleBindings"
+        description: "View role bindings only"
+        page: rolebindings
+        context:
+          namespace: "{{ namespaces.metadata.name }}"
+      - key: "c"
+        name: "ClusterRoles"
+        description: "View cluster-wide roles"
+        page: clusterroles
+
+  # ============================================================================
+  # ROLES - List roles in namespace
+  # ============================================================================
+  roles:
+    title: "Roles - {{ namespaces.metadata.name }}"
+    description: "Namespace-scoped roles"
+    data:
+      adapter: cli
+      command: "kubectl"
+      args:
+        ["get", "roles", "-n", "{{ namespaces.metadata.name }}", "-o", "json"]
+      items: "$.items[*]"
+      timeout: "30s"
+    view:
+      type: table
+      columns:
+        - path: "$.metadata.name"
+          display: "Name"
+          width: 50
+          style:
+            - default: true
+              color: yellow
+              bold: true
+        - path: "$.rules[*]"
+          display: "Rules"
+          transform: "{{ value | length }}"
+          width: 10
+          style:
+            - default: true
+              color: blue
+        - path: "$.metadata.creationTimestamp"
+          display: "Age"
+          transform: "{{ value | timeago }}"
+          width: 20
+          style:
+            - default: true
+              color: gray
+    next:
+      page: rbac_detail
+      context:
+        rbac_kind: "Role"
+        rbac_name: "$.metadata.name"
+
+  # ============================================================================
+  # ROLEBINDINGS - List role bindings in namespace
+  # ============================================================================
+  rolebindings:
+    title: "RoleBindings - {{ namespaces.metadata.name }}"
+    description: "Namespace-scoped role bindings"
+    data:
+      adapter: cli
+      command: "kubectl"
+      args:
+        [
+          "get",
+          "rolebindings",
+          "-n",
+          "{{ namespaces.metadata.name }}",
+          "-o",
+          "json",
+        ]
+      items: "$.items[*]"
+      timeout: "30s"
+    view:
+      type: table
+      columns:
+        - path: "$.metadata.name"
+          display: "Name"
+          width: 40
+          style:
+            - default: true
+              color: magenta
+              bold: true
+        - path: "$.roleRef.name"
+          display: "Role"
+          width: 30
+          style:
+            - default: true
+              color: yellow
+        - path: "$.subjects[*]"
+          display: "Subjects"
+          transform: "{{ value | length }}"
+          width: 10
+          style:
+            - default: true
+              color: blue
+        - path: "$.metadata.creationTimestamp"
+          display: "Age"
+          transform: "{{ value | timeago }}"
+          width: 20
+          style:
+            - default: true
+              color: gray
+    next:
+      page: rbac_detail
+      context:
+        rbac_kind: "RoleBinding"
+        rbac_name: "$.metadata.name"
+
+  # ============================================================================
+  # CLUSTERROLES - List cluster roles
+  # ============================================================================
+  clusterroles:
+    title: "ClusterRoles"
+    description: "Cluster-wide roles"
+    data:
+      adapter: cli
+      command: "kubectl"
+      args: ["get", "clusterroles", "-o", "json"]
+      items: "$.items[*]"
+      timeout: "30s"
+    view:
+      type: table
+      columns:
+        - path: "$.metadata.name"
+          display: "Name"
+          width: 50
+          style:
+            - condition: "{{ value | startswith('system:') }}"
+              color: gray
+            - default: true
+              color: yellow
+              bold: true
+        - path: "$.rules[*]"
+          display: "Rules"
+          transform: "{{ value | length }}"
+          width: 10
+          style:
+            - default: true
+              color: blue
+        - path: "$.metadata.creationTimestamp"
+          display: "Age"
+          transform: "{{ value | timeago }}"
+          width: 20
+          style:
+            - default: true
+              color: gray
+    next:
+      page: clusterrole_detail
+      context:
+        clusterrole_name: "$.metadata.name"
+
+  # ============================================================================
+  # RBAC DETAIL - Show detailed RBAC resource information
+  # ============================================================================
+  rbac_detail:
+    title: "{{ rbac_overview.kind }} - {{ rbac_overview.metadata.name }}"
+    description: "RBAC resource details"
+    data:
+      adapter: cli
+      command: "kubectl"
+      args:
+        [
+          "get",
+          "{{ rbac_overview.kind }}",
+          "{{ rbac_overview.metadata.name }}",
+          "-n",
+          "{{ namespaces.metadata.name }}",
+          "-o",
+          "yaml",
+        ]
+      items: "@this"
+      timeout: "30s"
+    view:
+      type: text
+      syntax: yaml
+      line_numbers: true
+
+  # ============================================================================
+  # CLUSTERROLE DETAIL - Show cluster role details
+  # ============================================================================
+  clusterrole_detail:
+    title: "ClusterRole - {{ clusterroles.metadata.name }}"
+    description: "Cluster role details"
+    data:
+      adapter: cli
+      command: "kubectl"
+      args:
+        ["get", "clusterrole", "{{ clusterroles.metadata.name }}", "-o", "yaml"]
       items: "@this"
       timeout: "30s"
     view:
