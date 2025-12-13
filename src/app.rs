@@ -151,6 +151,7 @@ pub struct App {
     nav_stack: NavigationStack,
     nav_context: NavigationContext,
     action_executor: ActionExecutor,
+    adapter_registry: Arc<crate::adapters::registry::AdapterRegistry>,
 
     // Current view state
     current_data: Vec<Value>,
@@ -236,7 +237,10 @@ enum StreamStatus {
 }
 
 impl App {
-    pub fn new(config: Config) -> Result<Self> {
+    pub fn new(
+        config: Config,
+        adapter_registry: crate::adapters::registry::AdapterRegistry,
+    ) -> Result<Self> {
         let current_page = config.start.clone();
         let nav_context = NavigationContext::new().with_globals(config.globals.clone());
         let action_executor = ActionExecutor::new(Arc::new(globals::template_engine().clone()));
@@ -247,6 +251,7 @@ impl App {
             nav_stack: NavigationStack::default(),
             nav_context,
             action_executor,
+            adapter_registry: Arc::new(adapter_registry),
             current_data: Vec::new(),
             filtered_data: Vec::new(),
             selected_index: 0,
@@ -404,6 +409,7 @@ impl App {
 
         // Clone necessary data for the background task
         let nav_context = self.nav_context.clone();
+        let adapter_registry = self.adapter_registry.clone();
 
         // Spawn background task
         tokio::spawn(async move {
@@ -414,7 +420,7 @@ impl App {
                 interval_timer.tick().await;
 
                 // Fetch data in background
-                let data = Self::fetch_data_static(&page, &nav_context).await;
+                let data = Self::fetch_data_static(&page, &nav_context, &adapter_registry).await;
 
                 if let Ok(data) = data {
                     // Send update through channel
@@ -583,62 +589,33 @@ impl App {
 
     async fn fetch_page_data(&self, page: &crate::config::Page) -> Result<Vec<Value>> {
         use crate::config::DataSource;
-        use crate::data::{CliProvider, DataProvider};
 
         let data_source = &page.data;
 
         match data_source {
             DataSource::SingleOrStream(crate::config::SingleOrStream::Single(single)) => {
-                match single.source_type {
-                    crate::config::DataSourceType::Cli => {
-                        let command = single.command.as_ref().ok_or_else(|| {
-                            crate::error::TermStackError::DataProvider(
-                                "Missing command".to_string(),
-                            )
-                        })?;
+                // Create data context for template rendering
+                let data_context = crate::data::provider::DataContext {
+                    globals: self.nav_context.globals.clone(),
+                    page_contexts: self.nav_context.page_contexts.clone(),
+                };
 
-                        // Render command and args with templates
-                        let ctx = self.create_template_context(None);
-                        let rendered_command =
-                            globals::template_engine().render_string(command, &ctx)?;
-                        let rendered_args: Result<Vec<String>> = single
-                            .args
-                            .iter()
-                            .map(|arg| globals::template_engine().render_string(arg, &ctx))
-                            .collect();
-                        let rendered_args = rendered_args?;
+                // Fetch data using adapter registry
+                let result = self
+                    .adapter_registry
+                    .fetch(single, &data_context)
+                    .await
+                    .map_err(|e| crate::error::TermStackError::DataProvider(e.to_string()))?;
 
-                        let mut provider = CliProvider::new(rendered_command)
-                            .with_args(rendered_args)
-                            .with_shell(single.shell);
+                // Extract items using JSONPath
+                let items = if let Some(items_path) = &single.items {
+                    let extractor = JsonPathExtractor::new(items_path)?;
+                    extractor.extract(&result)?
+                } else {
+                    vec![result]
+                };
 
-                        if let Some(timeout_str) = &single.timeout {
-                            if let Ok(duration) = humantime::parse_duration(timeout_str) {
-                                provider = provider.with_timeout(duration);
-                            }
-                        }
-
-                        let data_context = crate::data::provider::DataContext {
-                            globals: self.nav_context.globals.clone(),
-                            page_contexts: self.nav_context.page_contexts.clone(),
-                        };
-
-                        let result = provider.fetch(&data_context).await?;
-
-                        // Extract items using JSONPath
-                        let items = if let Some(items_path) = &single.items {
-                            let extractor = JsonPathExtractor::new(items_path)?;
-                            extractor.extract(&result)?
-                        } else {
-                            vec![result]
-                        };
-
-                        Ok(items)
-                    }
-                    _ => Err(crate::error::TermStackError::DataProvider(
-                        "HTTP and Stream sources not yet implemented".to_string(),
-                    )),
-                }
+                Ok(items)
             }
             DataSource::Multi(_) => Err(crate::error::TermStackError::DataProvider(
                 "Multi-source not yet implemented".to_string(),
@@ -669,70 +646,35 @@ impl App {
     async fn fetch_data_static(
         page: &crate::config::Page,
         nav_context: &NavigationContext,
+        adapter_registry: &crate::adapters::registry::AdapterRegistry,
     ) -> Result<Vec<Value>> {
         use crate::config::DataSource;
-        use crate::data::{CliProvider, DataProvider};
 
         let data_source = &page.data;
 
         match data_source {
             DataSource::SingleOrStream(crate::config::SingleOrStream::Single(single)) => {
-                match single.source_type {
-                    crate::config::DataSourceType::Cli => {
-                        let command = single.command.as_ref().ok_or_else(|| {
-                            crate::error::TermStackError::DataProvider(
-                                "Missing command".to_string(),
-                            )
-                        })?;
+                // Create data context for template rendering
+                let data_context = crate::data::provider::DataContext {
+                    globals: nav_context.globals.clone(),
+                    page_contexts: nav_context.page_contexts.clone(),
+                };
 
-                        // Create template context
-                        let mut ctx =
-                            TemplateContext::new().with_globals(nav_context.globals.clone());
-                        for (page_name, data) in &nav_context.page_contexts {
-                            ctx = ctx.with_page_context(page_name.clone(), data.clone());
-                        }
+                // Fetch data using adapter registry
+                let result = adapter_registry
+                    .fetch(single, &data_context)
+                    .await
+                    .map_err(|e| crate::error::TermStackError::DataProvider(e.to_string()))?;
 
-                        // Render command and args with templates
-                        let rendered_command =
-                            globals::template_engine().render_string(command, &ctx)?;
-                        let rendered_args: Result<Vec<String>> = single
-                            .args
-                            .iter()
-                            .map(|arg| globals::template_engine().render_string(arg, &ctx))
-                            .collect();
-                        let rendered_args = rendered_args?;
+                // Extract items using JSONPath
+                let items = if let Some(items_path) = &single.items {
+                    let extractor = JsonPathExtractor::new(items_path)?;
+                    extractor.extract(&result)?
+                } else {
+                    vec![result]
+                };
 
-                        let mut provider = CliProvider::new(rendered_command)
-                            .with_args(rendered_args)
-                            .with_shell(single.shell);
-
-                        if let Some(timeout_str) = &single.timeout {
-                            if let Ok(duration) = humantime::parse_duration(timeout_str) {
-                                provider = provider.with_timeout(duration);
-                            }
-                        }
-
-                        let data_context = crate::data::provider::DataContext {
-                            globals: nav_context.globals.clone(),
-                            page_contexts: nav_context.page_contexts.clone(),
-                        };
-
-                        let result = provider.fetch(&data_context).await?;
-
-                        // Extract items using JSONPath
-                        let items = if let Some(items_path) = &single.items {
-                            let extractor = JsonPathExtractor::new(items_path)?;
-                            extractor.extract(&result)?
-                        } else {
-                            vec![result]
-                        };
-
-                        Ok(items)
-                    }
-                    _ => Err(crate::error::TermStackError::DataProvider(
-                        "HTTP and Stream sources not yet implemented".to_string(),
-                    )),
-                }
+                Ok(items)
             }
             DataSource::Multi(_) => Err(crate::error::TermStackError::DataProvider(
                 "Multi-source not yet implemented".to_string(),

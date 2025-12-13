@@ -9,12 +9,12 @@ pages:
   main:
     title: "Main Page"
     data:
-      type: cli
+      adapter: cli
       command: "echo"
       args: ['{"items": [{"name": "test", "status": "active"}]}']
       items: "$.items[*]"
     view:
-      layout: table
+      type: table
       columns:
         - path: "$.name"
           display: "Name"

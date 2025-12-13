@@ -80,25 +80,31 @@ mod single_or_stream {
     {
         #[derive(Deserialize)]
         struct Helper {
-            #[serde(rename = "type")]
-            source_type: DataSourceType,
+            #[serde(rename = "type", default)]
+            source_type: Option<DataSourceType>,
+            #[serde(default)]
+            adapter: Option<String>,
         }
 
         let value = serde_json::Value::deserialize(deserializer)?;
         let helper: Helper =
             serde_json::from_value(value.clone()).map_err(serde::de::Error::custom)?;
 
-        match helper.source_type {
-            DataSourceType::Stream => {
-                let stream: StreamDataSource =
-                    serde_json::from_value(value).map_err(serde::de::Error::custom)?;
-                Ok(SingleOrStream::Stream(stream))
-            }
-            _ => {
-                let single: SingleDataSource =
-                    serde_json::from_value(value).map_err(serde::de::Error::custom)?;
-                Ok(SingleOrStream::Single(single))
-            }
+        // Check if it's a stream type (either old "type: stream" or new "adapter: stream")
+        let is_stream = match (&helper.source_type, &helper.adapter) {
+            (Some(DataSourceType::Stream), _) => true,
+            (_, Some(adapter)) if adapter == "stream" => true,
+            _ => false,
+        };
+
+        if is_stream {
+            let stream: StreamDataSource =
+                serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+            Ok(SingleOrStream::Stream(stream))
+        } else {
+            let single: SingleDataSource =
+                serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+            Ok(SingleOrStream::Single(single))
         }
     }
 
@@ -115,38 +121,43 @@ mod single_or_stream {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SingleDataSource {
-    #[serde(rename = "type")]
-    pub source_type: DataSourceType,
+    // New adapter-based approach
+    #[serde(default)]
+    pub adapter: Option<String>,
 
-    // CLI fields
-    #[serde(default)]
-    pub command: Option<String>,
-    #[serde(default)]
-    pub args: Vec<String>,
-    #[serde(default)]
-    pub shell: bool,
-    #[serde(default)]
-    pub working_dir: Option<String>,
-    #[serde(default)]
-    pub env: HashMap<String, String>,
+    // Old approach (for backwards compatibility during transition)
+    #[serde(rename = "type", default)]
+    pub source_type: Option<DataSourceType>,
 
-    // HTTP fields
-    #[serde(default)]
-    pub url: Option<String>,
-    #[serde(default)]
-    pub method: Option<HttpMethod>,
-    #[serde(default)]
-    pub headers: HashMap<String, String>,
-    #[serde(default)]
-    pub body: Option<String>,
+    // Generic config fields (used by all adapters)
+    #[serde(flatten)]
+    pub config: HashMap<String, serde_json::Value>,
 
-    // Common fields
+    // Common fields (kept for convenience and backwards compat)
     #[serde(default)]
     pub items: Option<String>,
     #[serde(default)]
     pub timeout: Option<String>,
     #[serde(default)]
     pub refresh_interval: Option<String>,
+}
+
+impl SingleDataSource {
+    /// Get the adapter name, falling back to source_type for backwards compatibility
+    pub fn get_adapter_name(&self) -> Option<String> {
+        if let Some(adapter) = &self.adapter {
+            Some(adapter.clone())
+        } else if let Some(source_type) = &self.source_type {
+            // Map old type to adapter name
+            Some(match source_type {
+                DataSourceType::Cli => "cli".to_string(),
+                DataSourceType::Http => "http".to_string(),
+                DataSourceType::Stream => "stream".to_string(),
+            })
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

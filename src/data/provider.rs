@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use crate::error::Result;
 
 /// Context passed to data providers for variable interpolation
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct DataContext {
     /// Global variables from config
     pub globals: HashMap<String, Value>,

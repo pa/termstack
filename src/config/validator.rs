@@ -93,21 +93,35 @@ impl ConfigValidator {
     }
 
     fn validate_single_data_source(source: &SingleDataSource) -> Result<()> {
-        match source.source_type {
-            DataSourceType::Cli => {
-                if source.command.is_none() {
+        // Get adapter name (either from adapter field or legacy source_type)
+        let adapter_name = source
+            .get_adapter_name()
+            .ok_or_else(|| anyhow!("Data source must specify either 'adapter' or 'type' field"))?;
+
+        // Validate adapter-specific requirements
+        match adapter_name.as_str() {
+            "cli" => {
+                if !source.config.contains_key("command") {
                     return Err(anyhow!("CLI data source must have 'command' field"));
                 }
             }
-            DataSourceType::Http => {
-                if source.url.is_none() {
+            "http" => {
+                if !source.config.contains_key("url") {
                     return Err(anyhow!("HTTP data source must have 'url' field"));
                 }
             }
-            DataSourceType::Stream => {
+            "script" => {
+                if !source.config.contains_key("script") {
+                    return Err(anyhow!("Script data source must have 'script' field"));
+                }
+            }
+            "stream" => {
                 return Err(anyhow!(
-                    "SingleDataSource cannot have type 'stream'. Use StreamDataSource instead."
+                    "SingleDataSource cannot have adapter 'stream'. Use StreamDataSource instead."
                 ));
+            }
+            _ => {
+                // Unknown adapter - will be caught by registry at runtime
             }
         }
 

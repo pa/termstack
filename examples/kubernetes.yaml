@@ -16,7 +16,7 @@ pages:
     title: "Namespaces"
     description: "List all Kubernetes namespaces"
     data:
-      type: cli
+      adapter: cli
       command: "kubectl"
       args: ["get", "namespaces", "-o", "json"]
       items: "$.items[*]"
@@ -66,7 +66,7 @@ pages:
     title: "Pods - {{ namespaces.metadata.name }}"
     description: "List all pods in namespace"
     data:
-      type: cli
+      adapter: cli
       command: "kubectl"
       args:
         ["get", "pods", "-n", "{{ namespaces.metadata.name }}", "-o", "json"]
@@ -133,7 +133,7 @@ pages:
     title: "Pod - {{ pods.metadata.name }}"
     description: "Detailed pod information"
     data:
-      type: cli
+      adapter: cli
       command: "kubectl"
       args:
         [
@@ -195,7 +195,7 @@ pages:
     title: "Describe - {{ pods.metadata.name }}"
     description: "kubectl describe output"
     data:
-      type: cli
+      adapter: cli
       command: "kubectl"
       args:
         [
@@ -218,7 +218,7 @@ pages:
     title: "Deployments - {{ namespaces.metadata.name }}"
     description: "List all deployments"
     data:
-      type: cli
+      adapter: cli
       command: "kubectl"
       args:
         [
@@ -309,7 +309,7 @@ pages:
     title: "Deployment - {{ deployments.metadata.name }}"
     description: "Deployment details"
     data:
-      type: cli
+      adapter: cli
       command: "kubectl"
       args:
         [
@@ -340,7 +340,7 @@ pages:
     title: "Pods - {{ deployments.metadata.name }}"
     description: "Pods managed by deployment"
     data:
-      type: cli
+      adapter: cli
       command: "kubectl"
       args:
         [
@@ -377,7 +377,7 @@ pages:
     title: "Services - {{ namespaces.metadata.name }}"
     description: "List all services"
     data:
-      type: cli
+      adapter: cli
       command: "kubectl"
       args:
         [
@@ -432,7 +432,7 @@ pages:
     title: "Service - {{ services.metadata.name }}"
     description: "Service details"
     data:
-      type: cli
+      adapter: cli
       command: "kubectl"
       args:
         [

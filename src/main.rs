@@ -80,10 +80,13 @@ async fn main() -> color_eyre::Result<()> {
         println!();
     }
 
+    // Initialize adapter registry with default adapters
+    let adapter_registry = termstack::adapters::registry::AdapterRegistry::with_defaults();
+
     // Run TUI
     println!("Starting TUI...\n");
     let terminal = ratatui::init();
-    let app = App::new(config).map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
+    let app = App::new(config, adapter_registry).map_err(|e| color_eyre::eyre::eyre!("{}", e))?;
     let result = app
         .run(terminal)
         .await
