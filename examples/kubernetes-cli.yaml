@@ -163,22 +163,13 @@ pages:
               color: red
             - default: true
               color: yellow
-        - path: "$.spec.containers[*].name"
+        - path: "$.spec.containers"
           display: "Containers"
           transform: "{{ value | length }}"
           width: 12
           style:
             - default: true
               color: blue
-        - path: "$.status.containerStatuses[?(@.ready==true)]"
-          display: "Ready/Total"
-          transform: "{{ value | length }}/{{ row.status.containerStatuses | length }}"
-          width: 12
-          style:
-            - condition: "{{ value | length == row.status.containerStatuses | length }}"
-              color: green
-            - default: true
-              color: yellow
         - path: "$.metadata.creationTimestamp"
           display: "Age"
           transform: "{{ value | timeago }}"

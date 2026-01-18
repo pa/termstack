@@ -34,6 +34,16 @@ TermStack is a config-driven Terminal User Interface (TUI) framework that lets y
 
 Think of it as "k9s for anything" — Kubernetes, REST APIs, dog breeds (yes, really), your custom CLI tools, or that weird internal API your company built in 2015 that nobody wants to touch.
 
+## Demos
+
+### CLI Adapter (Kubernetes Dashboard)
+
+![CLI Demo](assets/cli-demo.gif)
+
+### HTTP Adapter (Dog API Browser)
+
+![API Demo](assets/api-demo.gif)
+
 ## Features
 
 - **Config-driven** — Define pages, data sources, views, and actions in YAML. Your keyboard will thank you.
@@ -338,6 +348,35 @@ transform: "{{ value | upper }}"  # "SHOUTING"
 | `a` | Action mode |
 | `r` | Refresh |
 | `q` | Quit |
+
+## Claude Code Integration
+
+TermStack includes a Claude Code skill that auto-generates YAML configurations from natural language prompts. Because writing YAML is so 2024.
+
+### Using the Skill
+
+In Claude Code, just run:
+
+```
+/termstack "browse the Dog API and show breeds with their life expectancy"
+```
+
+Claude will:
+1. Research the API (if needed)
+2. Generate a complete, working YAML config
+3. Save it to `examples/`
+4. Give you the command to run it
+
+### What It Generates
+
+The skill knows about all TermStack features:
+- HTTP, CLI, Script, and Stream adapters
+- Table, Text, and Logs views
+- Conditional navigation and actions
+- Styling, transforms, and filters
+- Multi-page navigation with context passing
+
+No more copy-pasting from docs. Just describe what you want and let Claude figure out the YAML indentation (the hardest part, honestly).
 
 ## Architecture
 
