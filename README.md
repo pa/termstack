@@ -460,7 +460,7 @@ MIT License — Do whatever you want, just don't blame us.
 
 **Pramod Hayyappan** ([@pa](https://github.com/pa))
 
-Built this because I got tired of writing the same TUI code over and over. Now I just write YAML instead. Progress? Debatable. Fun? Absolutely.
+Built entirely with Claude (AI pair programming) without any prior Rust knowledge. Yes, you read that right - zero Rust experience, just vibes and AI. The future is here, and it writes Rust for you.
 
 ## Acknowledgments
 
