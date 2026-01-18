@@ -60,6 +60,27 @@ Think of it as "k9s for anything" — Kubernetes, REST APIs, dog breeds (yes, re
 
 ### Installation
 
+**Download pre-built binaries** from the [Releases page](https://github.com/pa/termstack/releases):
+
+| Platform | Architecture | Download |
+|----------|--------------|----------|
+| macOS | Intel (x86_64) | `termstack-macos-amd64.tar.gz` |
+| macOS | Apple Silicon (ARM64) | `termstack-macos-arm64.tar.gz` |
+| Linux | x86_64 | `termstack-linux-amd64.tar.gz` |
+| Linux | ARM64 | `termstack-linux-arm64.tar.gz` |
+
+```bash
+# Extract and install
+tar -xzf termstack-<platform>.tar.gz
+chmod +x termstack
+sudo mv termstack /usr/local/bin/
+
+# Verify
+termstack --help
+```
+
+**Or build from source:**
+
 ```bash
 # Clone the repository
 git clone https://github.com/pa/termstack.git
