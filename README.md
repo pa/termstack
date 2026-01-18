@@ -479,7 +479,7 @@ MIT License — Do whatever you want, just don't blame us.
 
 ## Author
 
-**Pramod Hayyappan** ([@pa](https://github.com/pa))
+**Pramodh Ayyappan** ([@pa](https://github.com/pa))
 
 Built entirely with Claude (AI pair programming) without any prior Rust knowledge. Yes, you read that right - zero Rust experience, just vibes and AI. The future is here, and it writes Rust for you.
 
