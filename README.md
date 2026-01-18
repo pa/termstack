@@ -467,7 +467,6 @@ Built entirely with Claude (AI pair programming) without any prior Rust knowledg
 - [k9s](https://k9scli.io/) — The inspiration for this madness
 - [ratatui](https://ratatui.rs/) — Making terminal UIs actually fun
 - Coffee — The real MVP
-- Claude — The AI pair programmer who helped debug at 3 AM
 
 ---
 
