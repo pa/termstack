@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/pa/termstack/main/assets/logo.png" alt="TermStack Logo" width="200"/>
+  <img src="assets/termstack.PNG" alt="TermStack Logo" width="600"/>
 </p>
 
 <h1 align="center">TermStack</h1>
@@ -417,17 +417,23 @@ A: Technically yes. Should you? Ask your manager, not us.
 
 MIT License — Do whatever you want, just don't blame us.
 
+## Author
+
+**Pramod Hayyappan** ([@pa](https://github.com/pa))
+
+Built this because I got tired of writing the same TUI code over and over. Now I just write YAML instead. Progress? Debatable. Fun? Absolutely.
+
 ## Acknowledgments
 
 - [k9s](https://k9scli.io/) — The inspiration for this madness
 - [ratatui](https://ratatui.rs/) — Making terminal UIs actually fun
 - Coffee — The real MVP
-- That one Stack Overflow answer from 2019 that saved the day
+- Claude — The AI pair programmer who helped debug at 3 AM
 
 ---
 
 <p align="center">
-  Made with and by developers who believe terminals deserve better UX
+  Made with mass amounts of mass by a developer who believes terminals deserve better UX
 </p>
 
 <p align="center">
