@@ -1,17 +1,50 @@
-# TermStack
+<p align="center">
+  <img src="https://raw.githubusercontent.com/pa/termstack/main/assets/logo.png" alt="TermStack Logo" width="200"/>
+</p>
 
-A generic TUI (Terminal User Interface) framework for building rich, navigable dashboards using simple YAML configuration files. No UI coding required!
+<h1 align="center">TermStack</h1>
 
-Inspired by [k9s](https://k9scli.io/), TermStack enables you to create powerful terminal applications with just YAML.
+<p align="center">
+  <strong>Build beautiful TUIs with YAML. No code. Just vibes.</strong>
+</p>
+
+<p align="center">
+  <a href="#features">Features</a> •
+  <a href="#quick-start">Quick Start</a> •
+  <a href="#examples">Examples</a> •
+  <a href="#configuration">Configuration</a> •
+  <a href="#keybindings">Keybindings</a> •
+  <a href="#contributing">Contributing</a>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/rust-1.70+-orange.svg" alt="Rust Version"/>
+  <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"/>
+  <img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome"/>
+  <img src="https://img.shields.io/badge/made%20with-coffee%20%E2%98%95-brown" alt="Made with Coffee"/>
+</p>
+
+---
+
+> **"Why write 1000 lines of Rust when you can write 50 lines of YAML?"**
+> 
+> — Someone who's definitely not lazy, just efficient
+
+TermStack is a config-driven Terminal User Interface (TUI) framework that lets you create powerful terminal dashboards using simple YAML configuration files. Inspired by the legendary [k9s](https://k9scli.io/), but for *everything*.
+
+Think of it as "k9s for anything" — Kubernetes, REST APIs, dog breeds (yes, really), your custom CLI tools, or that weird internal API your company built in 2015 that nobody wants to touch.
 
 ## Features
 
-- 🎨 **Config-driven**: Define pages, data sources, views, and actions in YAML
-- 🔄 **Dynamic rendering**: Automatically renders tables, details, logs, and YAML views
-- 📡 **Multi-source data**: Fetch from CLI commands or HTTP endpoints
-- 🎭 **Template engine**: Use Tera templates for dynamic content
-- 🧭 **Navigation**: Navigate between pages with context passing
-- ⚡ **Async**: Non-blocking data fetching with responsive UI
+- **Config-driven** — Define pages, data sources, views, and actions in YAML. Your keyboard will thank you.
+- **Multiple Data Adapters** — HTTP APIs, CLI commands, scripts, and streaming data. We don't discriminate.
+- **Rich Views** — Tables, text, logs, YAML views. Make your terminal pretty (finally).
+- **Template Engine** — Tera templates for dynamic content. `{{ variables }}` everywhere!
+- **Navigation** — Drill down into data like you're mining for Bitcoin, but actually useful.
+- **Conditional Routing** — Different pages for different data types. Files vs folders? We got you.
+- **Actions** — Execute commands, delete stuff (with confirmation, we're not monsters), refresh data.
+- **Styling** — Color-code everything. Because life's too short for monochrome terminals.
+- **Async** — Non-blocking data fetching. Your UI stays responsive while we do the heavy lifting.
 
 ## Quick Start
 
@@ -19,25 +52,58 @@ Inspired by [k9s](https://k9scli.io/), TermStack enables you to create powerful 
 
 ```bash
 # Clone the repository
-git clone <repo-url>
+git clone https://github.com/pa/termstack.git
 cd termstack
 
-# Build the project
+# Build it (grab a coffee, Rust compilation needs it)
 cargo build --release
+
+# The binary is now at ./target/release/termstack
 ```
 
-### Run Examples
+### Your First TUI in 30 Seconds
+
+Create `hello.yaml`:
+
+```yaml
+version: v1
+
+app:
+  name: "My First TUI"
+  description: "Look mom, no code!"
+
+start: main
+
+pages:
+  main:
+    title: "Hello, Terminal!"
+    data:
+      adapter: cli
+      command: "echo"
+      args: ['[{"message": "Welcome to TermStack!", "status": "awesome"}]']
+      items: "$[*]"
+    view:
+      type: table
+      columns:
+        - path: "$.message"
+          display: "Message"
+          width: 40
+        - path: "$.status"
+          display: "Status"
+          width: 20
+          style:
+            - default: true
+              color: green
+              bold: true
+```
+
+Run it:
 
 ```bash
-# Validate a config
-cargo run -- examples/kubernetes.yaml --validate
-
-# Run the Kubernetes TUI (requires kubectl)
-cargo run -- examples/kubernetes.yaml
-
-# Run with verbose output
-cargo run -- examples/kubernetes.yaml --verbose
+cargo run -- hello.yaml
 ```
+
+Congratulations! You just built a TUI without writing a single line of code. Your CS professor would be so proud (or horrified, either way).
 
 ### Usage
 
@@ -48,179 +114,322 @@ Arguments:
   <CONFIG>  Path to the YAML configuration file
 
 Options:
-  -v, --validate  Validate config and exit (don't run TUI)
-  -V, --verbose   Verbose output
+  -v, --validate  Validate config and exit (for the paranoid)
+  -V, --verbose   Verbose output (for debugging those 3 AM sessions)
   -h, --help      Print help
 ```
 
+## Examples
+
+### Dog Breeds Browser (Real API, No Auth!)
+
+Browse dog breeds like you're on Tinder, but for pets:
+
+```bash
+cargo run -- examples/dog-api.yaml
+```
+
+Uses the amazing [DogAPI](https://dogapi.dog/) — a free, open API with no authentication required. Perfect for demos, testing, or just learning about Corgis at 2 AM.
+
+### Kubernetes Dashboard (Because k9s wasn't enough)
+
+A k9s-style interface for when you need YAML-ception:
+
+```bash
+cargo run -- examples/kubernetes-cli.yaml
+```
+
+Navigate Namespaces → Pods → Logs → Existential Crisis about your YAML indentation.
+
+### More Examples
+
+| Example | Description | Command |
+|---------|-------------|---------|
+| `dog-api.yaml` | Browse dog breeds and facts | `cargo run -- examples/dog-api.yaml` |
+| `kubernetes-cli.yaml` | Kubernetes resource browser | `cargo run -- examples/kubernetes-cli.yaml` |
+| `stream-test.yaml` | Streaming logs demo | `cargo run -- examples/stream-test.yaml` |
+| `style-test.yaml` | Styling capabilities | `cargo run -- examples/style-test.yaml` |
+
 ## Configuration
 
-Create a YAML file defining your TUI:
+### Basic Structure
 
 ```yaml
 version: v1
 
 app:
-  name: "My Dashboard"
-  description: "Custom dashboard"
+  name: "App Name"
+  description: "What it does"
+  theme: "default"  # We have themes! (just the one, but it's nice)
 
 globals:
-  api_url: "http://localhost:8080"
+  api_base: "https://api.example.com"
+  # Variables accessible everywhere as {{ variable_name }}
 
-start: main_page
+start: main_page  # Where the magic begins
 
 pages:
   main_page:
-    title: "Main Page"
+    title: "Page Title"
     data:
-      type: cli
-      command: "kubectl"
-      args: ["get", "pods", "-o", "json"]
-      items: "$.items[*]"
+      adapter: http  # or cli, script, stream
+      url: "{{ api_base }}/endpoint"
+      items: "$.data[*]"  # JSONPath is your friend
     view:
-      layout: table
+      type: table
       columns:
-        - path: "$.metadata.name"
+        - path: "$.name"
           display: "Name"
-        - path: "$.status.phase"
-          display: "Status"
+          width: 30
     next:
       page: detail_page
       context:
-        pod_name: "$.metadata.name"
+        item_id: "$.id"
 ```
 
-See [examples/](examples/) for more complete examples:
-- `kubernetes.yaml` - Kubernetes resource browser
-- `raptor.yaml` - Facets Raptor TUI
+### Data Adapters
 
-## Example: Kubernetes Browser
+#### HTTP — For REST APIs
 
-The included Kubernetes example provides a k9s-style interface:
-
-- **Namespaces** → **Pods** → **Pod Details** → **Logs**
-- **Namespaces** → **Deployments** → **Deployment Details**
-- **Namespaces** → **Services** → **Service Details**
-
-### Features:
-- Navigate with `j`/`k` or arrow keys
-- Press `Enter` to drill down
-- Press `Esc` to go back
-- Press `d` to delete resources (with confirmation)
-- Press `l` to view logs
-- Press `y` to see raw YAML
-- Press `q` to quit
-
-## Architecture
-
-TermStack is built on:
-
-- **[ratatui](https://ratatui.rs/)** - Terminal UI framework
-- **[tera](https://tera.netlify.app/)** - Template engine
-- **[tokio](https://tokio.rs/)** - Async runtime
-- **[serde](https://serde.rs/)** - Serialization
-- **[reqwest](https://docs.rs/reqwest/)** - HTTP client
-
-## Current Status
-
-**Phase 1 Complete** ✅
-- Configuration system with validation
-- Data providers (CLI, HTTP, JSONPath, caching)
-- Template engine with custom filters
-- Navigation scaffolding
-- Error handling
-
-**In Progress** 🚧
-- View rendering (table, detail, YAML)
-- Input handling and keybindings
-- Action execution
-- Full integration
-
-See [PROGRESS.md](PROGRESS.md) for detailed status.
-
-## Development
-
-### Build
-
-```bash
-cargo build
+```yaml
+data:
+  adapter: http
+  url: "https://dogapi.dog/api/v2/breeds"
+  method: GET
+  headers:
+    Accept: "application/json"
+  items: "$.data[*]"
+  timeout: "30s"
+  refresh_interval: "5m"  # Auto-refresh!
 ```
 
-### Test
+#### CLI — For shell commands
 
-```bash
-cargo test
+```yaml
+data:
+  adapter: cli
+  command: "kubectl"
+  args: ["get", "pods", "-o", "json"]
+  items: "$.items[*]"
 ```
 
-### Check
+#### Stream — For real-time data
 
-```bash
-cargo check
+```yaml
+data:
+  type: stream
+  command: "kubectl"
+  args: ["logs", "-f", "my-pod"]
+  buffer_size: 100
+  follow: true
 ```
 
-### Documentation
+### Views
 
-```bash
-cargo doc --open
+**Table** — The workhorse:
+```yaml
+view:
+  type: table
+  columns:
+    - path: "$.name"
+      display: "Name"
+      width: 30
+      style:
+        - condition: "{{ value == 'active' }}"
+          color: green
+        - default: true
+          color: white
 ```
 
-## Configuration Reference
+**Text** — For detailed views:
+```yaml
+view:
+  type: text
+  syntax: yaml  # Syntax highlighting!
+```
 
-See [docs/SPECIFICATION.md](docs/SPECIFICATION.md) for complete configuration schema and examples.
+**Logs** — For streaming:
+```yaml
+view:
+  type: logs
+  follow: true
+  wrap: true
+```
 
-### Key Concepts
+### Navigation
 
-- **Pages**: Define views and navigation flow
-- **Data Sources**: CLI commands or HTTP endpoints
-- **Views**: Table, detail, logs, or YAML layouts
-- **Actions**: Execute commands or navigate
-- **Templates**: Use `{{ variables }}` for dynamic content
-- **JSONPath**: Extract data with `$.path.to.field`
+**Simple** (Enter key):
+```yaml
+next:
+  page: detail_page
+  context:
+    item_id: "$.id"
+```
 
-### Template Variables
+**Conditional** (Smart routing):
+```yaml
+next:
+  - condition: "{{ row.type == 'folder' }}"
+    page: folder_view
+  - condition: "{{ row.type == 'file' }}"
+    page: file_view
+  - default: true
+    page: fallback
+```
 
-- `{{ globals.var }}` - Global variables
-- `{{ page.field }}` - Data from previous pages
-- `{{ value }}` - Current row value
-- `{{ row.field }}` - Current row field
+### Actions
 
-### Custom Filters
+Press `a` to enter action mode, then the action key:
 
-- `{{ timestamp | timeago }}` - "2h ago"
-- `{{ bytes | filesizeformat }}` - "1.5 GB"
-- `{{ status | status_color }}` - Color mapping
+```yaml
+actions:
+  - key: "d"
+    name: "Delete"
+    confirm: "Really delete {{ name }}? (no undo!)"
+    command: "kubectl"
+    args: ["delete", "pod", "{{ name }}"]
+    refresh: true
+  - key: "v"
+    name: "View Details"
+    page: "detail_page"
+```
+
+### Styling
+
+Make it pretty:
+
+```yaml
+style:
+  - condition: "{{ value == 'Running' }}"
+    color: green
+    bold: true
+  - condition: "{{ value == 'Failed' }}"
+    color: red
+  - default: true
+    color: gray
+```
+
+Available colors: `black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `white`, `gray`
+
+### Template Filters
+
+```yaml
+# Time ago
+transform: "{{ value | timeago }}"  # "2 hours ago"
+
+# File size
+transform: "{{ value | filesizeformat }}"  # "1.5 MB"
+
+# String manipulation
+transform: "{{ value | upper }}"  # "SHOUTING"
+```
 
 ## Keybindings
 
-### Global
-- `q` / `Esc` - Quit / Go back
-- `?` - Help
-- `Ctrl+C` - Force quit
+| Key | Action | 
+|-----|--------|
+| `j` / `↓` | Move down |
+| `k` / `↑` | Move up |
+| `g` | Go to top |
+| `G` | Go to bottom |
+| `Enter` | Select / Navigate |
+| `Esc` | Go back |
+| `/` | Search |
+| `a` | Action mode |
+| `r` | Refresh |
+| `q` | Quit |
 
-### Navigation (planned)
-- `j` / `↓` - Move down
-- `k` / `↑` - Move up
-- `g` - Go to top
-- `G` - Go to bottom
-- `Enter` - Select / Navigate
+## Architecture
 
-### Actions (planned)
-- `r` - Refresh
-- `/` - Search
-- `y` - YAML view
+Built with Rust and love:
+
+- **[ratatui](https://ratatui.rs/)** — Terminal UI framework (the good stuff)
+- **[tera](https://tera.netlify.app/)** — Template engine (Jinja2, but Rusty)
+- **[tokio](https://tokio.rs/)** — Async runtime (zoom zoom)
+- **[serde](https://serde.rs/)** — Serialization (YAML → Rust magic)
+- **[reqwest](https://docs.rs/reqwest/)** — HTTP client (fetch all the things)
+
+## Open Source APIs Used for Testing
+
+Big shoutout to these awesome free APIs that made testing TermStack a joy:
+
+| API | Description | Auth | Link |
+|-----|-------------|------|------|
+| **DogAPI** | Dog breeds, facts, and groups | None | [dogapi.dog](https://dogapi.dog/) |
+| **JSONPlaceholder** | Fake REST API for testing | None | [jsonplaceholder.typicode.com](https://jsonplaceholder.typicode.com/) |
+| **httpbin** | HTTP request & response testing | None | [httpbin.org](https://httpbin.org/) |
+
+## Fun Facts
+
+- TermStack was born because someone got tired of writing the same table rendering code for the 47th time
+- The first working prototype was built entirely on coffee and spite
+- "YAML" stands for "YAML Ain't Markup Language" and we're not sorry about the recursion
+- The `q` key quits because `quit` has too many letters
+- Every bug is a feature waiting to be documented
 
 ## Contributing
 
-See [PROGRESS.md](PROGRESS.md) for current development status and next steps.
+We welcome contributions! Here's how:
+
+1. Fork the repo
+2. Create a branch (`git checkout -b feature/amazing-feature`)
+3. Make your changes
+4. Run tests (`cargo test`)
+5. Commit (`git commit -m 'Add amazing feature'`)
+6. Push (`git push origin feature/amazing-feature`)
+7. Open a PR
+
+### Development
+
+```bash
+# Build
+cargo build
+
+# Test
+cargo test
+
+# Check (fast compile check)
+cargo check
+
+# Run with example
+cargo run -- examples/dog-api.yaml
+```
+
+## Troubleshooting
+
+**Q: My YAML isn't working!**
+
+A: Check your indentation. Then check it again. YAML is 90% indentation anxiety.
+
+**Q: The TUI is blank!**
+
+A: Make sure your data source is accessible. Try `--verbose` for debug output.
+
+**Q: Actions aren't triggering!**
+
+A: Press `a` first to enter action mode, then your action key.
+
+**Q: Can I use this in production?**
+
+A: Technically yes. Should you? Ask your manager, not us.
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+MIT License — Do whatever you want, just don't blame us.
 
 ## Acknowledgments
 
-Inspired by [k9s](https://k9scli.io/) - Kubernetes CLI manager.
+- [k9s](https://k9scli.io/) — The inspiration for this madness
+- [ratatui](https://ratatui.rs/) — Making terminal UIs actually fun
+- Coffee — The real MVP
+- That one Stack Overflow answer from 2019 that saved the day
 
 ---
 
-**Note**: This is an early development version. Full TUI functionality is still being implemented.
+<p align="center">
+  Made with and by developers who believe terminals deserve better UX
+</p>
+
+<p align="center">
+  <sub>If you read this far, you deserve a cookie. Go get one.</sub>
+</p>

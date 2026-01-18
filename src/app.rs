@@ -806,7 +806,14 @@ impl App {
             }
             KeyCode::Char('j') | KeyCode::Down => self.move_down(),
             KeyCode::Char('k') | KeyCode::Up => self.move_up(),
-            KeyCode::Char('g') => self.move_top(),
+            KeyCode::Char('g') => {
+                if self.action_mode {
+                    self.action_mode = false;
+                    self.handle_action_key('g').await;
+                } else {
+                    self.move_top();
+                }
+            }
             KeyCode::Char('G') => self.move_bottom(),
             KeyCode::Char('r') => self.load_current_page().await,
             KeyCode::Char('/') => {
@@ -815,6 +822,11 @@ impl App {
                 self.needs_render = true;
             }
             KeyCode::Char('f') => {
+                if self.action_mode {
+                    self.action_mode = false;
+                    self.handle_action_key('f').await;
+                    return;
+                }
                 // Toggle follow in logs view (when paused, 'f' resumes LIVE mode)
                 if self.stream_active {
                     if self.stream_paused {
@@ -1320,14 +1332,36 @@ impl App {
             Navigation::Conditional(conditionals) => {
                 // Find first matching condition or default
                 let mut found = None;
+                let mut default_found = None;
+
+                // Get selected row for condition evaluation
+                let selected_row = self.filtered_data.get(self.selected_index);
+
                 for cond in conditionals {
                     if cond.default {
-                        found = Some((&cond.page, &cond.context));
-                        break;
+                        default_found = Some((&cond.page, &cond.context));
+                        continue;
                     }
-                    // TODO: Evaluate conditions
+
+                    // Evaluate condition if present
+                    if let Some(condition) = &cond.condition {
+                        if let Some(row) = selected_row {
+                            let ctx = self.create_template_context(Some(row));
+                            let matches = globals::template_engine()
+                                .render_string(condition, &ctx)
+                                .map(|result| result.trim() == "true")
+                                .unwrap_or(false);
+
+                            if matches {
+                                found = Some((&cond.page, &cond.context));
+                                break;
+                            }
+                        }
+                    }
                 }
-                match found {
+
+                // Use first matching condition, or fall back to default
+                match found.or(default_found) {
                     Some(f) => f,
                     None => return,
                 }

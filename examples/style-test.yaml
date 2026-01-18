@@ -1,3 +1,20 @@
+# =============================================================================
+# Style Test Example
+# =============================================================================
+# Demonstrates TermStack's styling capabilities for terminal UI.
+#
+# Usage: cargo run -- examples/style-test.yaml
+#
+# This example shows:
+# - Conditional column styling based on values
+# - Row-level styling for entire rows
+# - Color options (green, red, yellow, cyan, blue, etc.)
+# - Text modifiers (bold, dim)
+# - Default fallback styles
+#
+# Because life's too short for boring monochrome terminals!
+# =============================================================================
+
 version: v1
 
 app:
@@ -6,16 +23,25 @@ app:
 start: items
 
 pages:
+  # --------------------------------------------------------------------------
+  # Styled Items - Showcasing all styling features
+  # --------------------------------------------------------------------------
+  # This page demonstrates how to make your terminal look fabulous.
+  # Uses inline JSON data to show different status styles.
   items:
     title: "Styled Items Test"
     data:
       adapter: cli
       command: "echo"
-      args: ['{"items": [{"name": "Running Pod", "status": "Running", "count": 5}, {"name": "Failed Pod", "status": "Failed", "count": 0}, {"name": "Pending Pod", "status": "Pending", "count": 3}]}']
+      args:
+        [
+          '{"items": [{"name": "Running Pod", "status": "Running", "count": 5}, {"name": "Failed Pod", "status": "Failed", "count": 0}, {"name": "Pending Pod", "status": "Pending", "count": 3}]}',
+        ]
       items: "$.items[*]"
     view:
       type: table
       columns:
+        # Name column - Always cyan and bold
         - path: "$.name"
           display: "Name"
           width: 30
@@ -23,6 +49,9 @@ pages:
             - default: true
               color: cyan
               bold: true
+
+        # Status column - Traffic light styling
+        # Green = good, Yellow = meh, Red = uh oh
         - path: "$.status"
           display: "Status"
           width: 15
@@ -37,6 +66,8 @@ pages:
               color: yellow
             - default: true
               color: white
+
+        # Count column - Zero is bad, anything else is fine
         - path: "$.count"
           display: "Count"
           width: 10
@@ -45,6 +76,9 @@ pages:
               color: red
             - default: true
               color: blue
+
+      # Row-level styling - Dims failed/pending rows
+      # So your eyes go straight to the healthy stuff
       row_style:
         - condition: "{{ status == 'Failed' }}"
           color: red

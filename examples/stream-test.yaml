@@ -1,3 +1,20 @@
+# =============================================================================
+# Stream Test Example
+# =============================================================================
+# Demonstrates real-time streaming capabilities with the stream adapter.
+#
+# Usage: cargo run -- examples/stream-test.yaml
+#
+# This example shows:
+# - Stream adapter for real-time data
+# - Logs view with follow mode
+# - Buffer configuration for streaming data
+# - Live ping output display
+#
+# Pro tip: Watch those packets fly! It's like a heartbeat monitor for your
+# network connection, but less stressful (hopefully).
+# =============================================================================
+
 version: v1
 
 app:
@@ -7,15 +24,20 @@ app:
 start: ping_stream
 
 pages:
+  # --------------------------------------------------------------------------
+  # Ping Stream - Real-time ping output
+  # --------------------------------------------------------------------------
+  # Streams ping output directly to the terminal in real-time.
+  # Great for monitoring network connectivity or just watching numbers go by.
   ping_stream:
     title: "Ping Test - Streaming"
     description: "Stream ping output in real-time"
     data:
       type: stream
       command: "ping"
-      args: ["-c", "50", "8.8.8.8"]
-      buffer_size: 20
-      follow: true
+      args: ["-c", "50", "8.8.8.8"] # Ping Google DNS 50 times
+      buffer_size: 20 # Keep last 20 lines in memory
+      follow: true # Auto-scroll to new content
     view:
       type: logs
       follow: false

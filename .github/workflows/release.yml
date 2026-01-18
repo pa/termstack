@@ -1,0 +1,187 @@
+# =============================================================================
+# Release Workflow
+# =============================================================================
+# Automatically builds and releases binaries when a version tag is pushed.
+# Uses semantic versioning (v1.0.0, v1.2.3, etc.)
+#
+# To release:
+#   git tag v1.0.0
+#   git push origin v1.0.0
+#
+# This will:
+# 1. Build binaries for all platforms
+# 2. Create a GitHub release
+# 3. Upload binaries as release assets
+# 4. Generate release notes from commits
+# =============================================================================
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'      # v1.0.0
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'    # v1.0.0-beta.1, v1.0.0-rc.1
+
+env:
+  CARGO_TERM_COLOR: always
+  BINARY_NAME: termstack
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Create Release
+  # ---------------------------------------------------------------------------
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+      version: ${{ steps.get_version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version from tag
+        id: get_version
+        run: echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Get commits since last tag
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -n "$PREV_TAG" ]; then
+            CHANGELOG=$(git log --pretty=format:"- %s (%h)" $PREV_TAG..HEAD)
+          else
+            CHANGELOG=$(git log --pretty=format:"- %s (%h)" HEAD~10..HEAD)
+          fi
+          echo "changelog<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGELOG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.get_version.outputs.version }}
+          name: TermStack ${{ steps.get_version.outputs.version }}
+          body: |
+            ## What's New
+
+            ${{ steps.changelog.outputs.changelog }}
+
+            ## Installation
+
+            Download the appropriate binary for your platform below, then:
+
+            ```bash
+            # macOS/Linux: Extract and install
+            tar -xzf termstack-<platform>.tar.gz
+            chmod +x termstack
+            sudo mv termstack /usr/local/bin/
+
+            # Verify installation
+            termstack --help
+            ```
+
+            ### Available Binaries
+
+            | Platform | Architecture | File |
+            |----------|--------------|------|
+            | macOS | Intel (x86_64) | `termstack-macos-amd64.tar.gz` |
+            | macOS | Apple Silicon (ARM64) | `termstack-macos-arm64.tar.gz` |
+            | Linux | x86_64 | `termstack-linux-amd64.tar.gz` |
+            | Linux | ARM64 | `termstack-linux-arm64.tar.gz` |
+
+            ## Checksums
+
+            SHA256 checksums are provided for each binary. Verify with:
+            ```bash
+            sha256sum -c termstack-<platform>.sha256
+            ```
+          draft: false
+          prerelease: ${{ contains(steps.get_version.outputs.version, '-') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ---------------------------------------------------------------------------
+  # Build Binaries
+  # ---------------------------------------------------------------------------
+  build-binaries:
+    name: Build (${{ matrix.name }})
+    needs: create-release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS Intel
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            name: macos-amd64
+            artifact: termstack-macos-amd64
+          # macOS Apple Silicon
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            name: macos-arm64
+            artifact: termstack-macos-arm64
+          # Linux x86_64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            name: linux-amd64
+            artifact: termstack-linux-amd64
+          # Linux ARM64
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            name: linux-arm64
+            artifact: termstack-linux-arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-action@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-compilation tools (Linux ARM)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+
+      - name: Package binary
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar czvf ../../../${{ matrix.artifact }}.tar.gz ${{ env.BINARY_NAME }}
+          cd ../../..
+
+      - name: Generate checksum
+        run: |
+          if [ "${{ matrix.os }}" = "macos-latest" ]; then
+            shasum -a 256 ${{ matrix.artifact }}.tar.gz > ${{ matrix.artifact }}.sha256
+          else
+            sha256sum ${{ matrix.artifact }}.tar.gz > ${{ matrix.artifact }}.sha256
+          fi
+
+      - name: Upload binary to release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.create-release.outputs.version }}
+          files: |
+            ${{ matrix.artifact }}.tar.gz
+            ${{ matrix.artifact }}.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
