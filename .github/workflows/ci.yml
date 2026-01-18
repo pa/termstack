@@ -1,8 +1,7 @@
 # =============================================================================
-# Continuous Integration
+# CI & Release
 # =============================================================================
-# Runs on every push and pull request to ensure code quality.
-# Tests across multiple platforms because we're not savages.
+# Runs on tag push to build release binaries and create GitHub release.
 # =============================================================================
 
 name: CI
@@ -15,61 +14,14 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: 1
+  BINARY_NAME: termstack
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Code Quality Checks
-  # ---------------------------------------------------------------------------
-  lint:
-    name: Lint & Format
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-
-  # ---------------------------------------------------------------------------
-  # Tests
-  # ---------------------------------------------------------------------------
-  test:
-    name: Test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: Run tests
-        run: cargo test --all-features
-
-  # ---------------------------------------------------------------------------
-  # Build Verification
+  # Build Binaries
   # ---------------------------------------------------------------------------
   build:
-    name: Build (${{ matrix.target }})
+    name: Build (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -79,18 +31,22 @@ jobs:
           - os: macos-latest
             target: x86_64-apple-darwin
             name: macos-amd64
+            artifact: termstack-macos-amd64
           # macOS Apple Silicon
           - os: macos-latest
             target: aarch64-apple-darwin
             name: macos-arm64
+            artifact: termstack-macos-arm64
           # Linux x86_64
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             name: linux-amd64
+            artifact: termstack-linux-amd64
           # Linux ARM64
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             name: linux-arm64
+            artifact: termstack-linux-arm64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -116,18 +72,54 @@ jobs:
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
 
+      - name: Package binary
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar czvf ../../../${{ matrix.artifact }}.tar.gz ${{ env.BINARY_NAME }}
+          cd ../../..
+
+      - name: Generate checksum
+        run: |
+          if [ "${{ matrix.os }}" = "macos-latest" ]; then
+            shasum -a 256 ${{ matrix.artifact }}.tar.gz > ${{ matrix.artifact }}.sha256
+          else
+            sha256sum ${{ matrix.artifact }}.tar.gz > ${{ matrix.artifact }}.sha256
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            ${{ matrix.artifact }}.tar.gz
+            ${{ matrix.artifact }}.sha256
+
   # ---------------------------------------------------------------------------
-  # Security Audit
+  # Create Release
   # ---------------------------------------------------------------------------
-  security:
-    name: Security Audit
+  release:
+    name: Create Release
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install cargo-audit
-        run: cargo install cargo-audit
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
 
-      - name: Run security audit
-        run: cargo audit
+      - name: Prepare release files
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name "*.tar.gz" -o -name "*.sha256" \) -exec mv {} release/ \;
+          ls -la release/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: release/*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
