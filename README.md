@@ -26,10 +26,6 @@
 
 ---
 
-> **"Why write 1000 lines of Rust when you can write 50 lines of YAML?"**
-> 
-> — Someone who's definitely not lazy, just efficient
-
 TermStack is a config-driven Terminal User Interface (TUI) framework that lets you create powerful terminal dashboards using simple YAML configuration files. Inspired by the legendary [k9s](https://k9scli.io/), but for *everything*.
 
 Think of it as "k9s for anything" — Kubernetes, REST APIs, dog breeds (yes, really), your custom CLI tools, or that weird internal API your company built in 2015 that nobody wants to touch.
