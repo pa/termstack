@@ -1,14 +1,15 @@
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 use tera::{Context, Tera};
 
 use super::filters;
 use crate::error::{Result, TermStackError};
 
-/// Template engine for rendering dynamic content
+/// Template engine for rendering dynamic content (optimized with Arc<RwLock> for shared access)
 #[derive(Debug, Clone)]
 pub struct TemplateEngine {
-    tera: Tera,
+    tera: Arc<RwLock<Tera>>,
 }
 
 impl TemplateEngine {
@@ -20,15 +21,20 @@ impl TemplateEngine {
         tera.register_filter("filesizeformat", filters::filesizeformat);
         tera.register_filter("status_color", filters::status_color);
 
-        Ok(Self { tera })
+        Ok(Self {
+            tera: Arc::new(RwLock::new(tera)),
+        })
     }
 
-    /// Render a template string with the given context
+    /// Render a template string with the given context (optimized - no cloning!)
     pub fn render_string(&self, template: &str, context: &TemplateContext) -> Result<String> {
         let tera_context = context.to_tera_context();
 
-        // Clone tera for rendering since render_str requires &mut self
-        let mut tera = self.tera.clone();
+        // Use write lock for rendering (only locks during actual rendering, not cloning)
+        let mut tera = self.tera.write().map_err(|e| {
+            TermStackError::Template(format!("Failed to acquire template lock: {}", e))
+        })?;
+
         tera.render_str(template, &tera_context)
             .map_err(|e| TermStackError::Template(format!("Template rendering error: {}", e)))
     }
@@ -74,6 +80,22 @@ impl TemplateContext {
         }
     }
 
+    /// Create a new context with pre-allocated capacity (optimization)
+    pub fn with_capacity() -> Self {
+        Self {
+            globals: HashMap::with_capacity(10),
+            page_contexts: HashMap::with_capacity(5),
+            current: None,
+        }
+    }
+
+    /// Reset the context for reuse (optimization for pooling)
+    pub fn reset(&mut self) {
+        self.globals.clear();
+        self.page_contexts.clear();
+        self.current = None;
+    }
+
     pub fn with_globals(mut self, globals: HashMap<String, Value>) -> Self {
         self.globals = globals;
         self
@@ -87,6 +109,21 @@ impl TemplateContext {
     pub fn with_current(mut self, current: Value) -> Self {
         self.current = Some(current);
         self
+    }
+
+    /// Set globals in-place (optimization for reuse)
+    pub fn set_globals(&mut self, globals: HashMap<String, Value>) {
+        self.globals = globals;
+    }
+
+    /// Set current value in-place (optimization for reuse)
+    pub fn set_current(&mut self, current: Option<Value>) {
+        self.current = current;
+    }
+
+    /// Add page context in-place (optimization for reuse)
+    pub fn add_page_context(&mut self, page: String, data: Value) {
+        self.page_contexts.insert(page, data);
     }
 
     /// Convert to Tera context

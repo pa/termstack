@@ -629,7 +629,8 @@ impl App {
     }
 
     fn create_template_context(&self, current_row: Option<&Value>) -> TemplateContext {
-        let mut ctx = TemplateContext::new().with_globals(self.nav_context.globals.clone());
+        // Use with_capacity for pre-allocation (optimization)
+        let mut ctx = TemplateContext::with_capacity().with_globals(self.nav_context.globals.clone());
 
         for (page, data) in &self.nav_context.page_contexts {
             ctx = ctx.with_page_context(page.clone(), data.clone());
