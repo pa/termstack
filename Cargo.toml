@@ -12,8 +12,8 @@ crossterm = "0.28.1"
 ratatui = "0.29.0"
 color-eyre = "0.6.3"
 
-# Async Runtime
-tokio = { version = "1", features = ["full"] }
+# Async Runtime (optimized - only needed features)
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "process", "io-util", "macros"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -42,9 +42,29 @@ ansi-to-tui = "7"
 # Syntax highlighting
 tui-syntax-highlight = "0.1"
 
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "rendering"
+harness = false
+
+[[bench]]
+name = "filtering"
+harness = false
+
+[[bench]]
+name = "templates"
+harness = false
+
+[[bench]]
+name = "search"
+harness = false
+
 # Read the optimization guideline for more details: https://ratatui.rs/recipes/apps/release-your-app/#optimizations
 [profile.release]
 codegen-units = 1
 lto = true
-opt-level = "s"
+opt-level = 3        # Maximum performance (changed from "s" for size)
 strip = true
+panic = "abort"      # Smaller binary, faster panics

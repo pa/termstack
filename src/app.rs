@@ -155,7 +155,7 @@ pub struct App {
 
     // Current view state
     current_data: Vec<Value>,
-    filtered_data: Vec<Value>,
+    filtered_indices: Vec<usize>, // Indices into current_data (optimized - no cloning)
     selected_index: usize,
     scroll_offset: usize,
     table_state: ratatui::widgets::TableState,
@@ -253,7 +253,7 @@ impl App {
             action_executor,
             adapter_registry: Arc::new(adapter_registry),
             current_data: Vec::new(),
-            filtered_data: Vec::new(),
+            filtered_indices: Vec::new(),
             selected_index: 0,
             scroll_offset: 0,
             table_state: ratatui::widgets::TableState::default(),
@@ -973,7 +973,9 @@ impl App {
     }
 
     fn get_selected_row(&self) -> Option<&Value> {
-        self.filtered_data.get(self.selected_index)
+        self.filtered_indices
+            .get(self.selected_index)
+            .and_then(|&idx| self.current_data.get(idx))
     }
 
     fn create_template_context_map(&self) -> std::collections::HashMap<String, Value> {
@@ -1217,10 +1219,10 @@ impl App {
             display_buffer_len - 1
         } else {
             // Table mode: use filtered data
-            if self.filtered_data.is_empty() {
+            if self.filtered_indices.is_empty() {
                 return;
             }
-            self.filtered_data.len() - 1
+            self.filtered_indices.len() - 1
         };
 
         if self.selected_index < max_index {
@@ -1293,8 +1295,8 @@ impl App {
             }
         } else {
             // Table mode
-            if !self.filtered_data.is_empty() {
-                self.selected_index = self.filtered_data.len() - 1;
+            if !self.filtered_indices.is_empty() {
+                self.selected_index = self.filtered_indices.len() - 1;
                 self.needs_render = true;
             }
         }
@@ -1335,7 +1337,7 @@ impl App {
                 let mut default_found = None;
 
                 // Get selected row for condition evaluation
-                let selected_row = self.filtered_data.get(self.selected_index);
+                let selected_row = self.get_selected_row();
 
                 for cond in conditionals {
                     if cond.default {
@@ -1375,10 +1377,10 @@ impl App {
         self.nav_stack.push(frame);
 
         // Capture context from selected row
-        if let Some(selected_row) = self.filtered_data.get(self.selected_index) {
+        if let Some(selected_row) = self.get_selected_row().cloned() {
             for (key, json_path) in context_map {
                 if let Ok(extractor) = JsonPathExtractor::new(json_path) {
-                    if let Ok(Some(value)) = extractor.extract_single(selected_row) {
+                    if let Ok(Some(value)) = extractor.extract_single(&selected_row) {
                         self.nav_context.set_page_context(key.clone(), value);
                     }
                 }
@@ -1386,7 +1388,7 @@ impl App {
 
             // Also store the entire selected row under the current page name
             self.nav_context
-                .set_page_context(self.current_page.clone(), selected_row.clone());
+                .set_page_context(self.current_page.clone(), selected_row);
         }
 
         // Clear search when navigating to next page
@@ -1579,7 +1581,7 @@ impl App {
         // Get the rendered page title
         let page_title = self.get_rendered_page_title();
 
-        if self.filtered_data.is_empty() {
+        if self.filtered_indices.is_empty() {
             let empty = Paragraph::new("No data")
                 .block(Block::default().borders(Borders::ALL).title(page_title));
             frame.render_widget(empty, area);
@@ -1600,13 +1602,13 @@ impl App {
             .collect();
         let header = Row::new(header_cells).height(1);
 
-        // Build rows with styling
+        // Build rows with styling (optimized - using indices)
         let _ctx = self.create_template_context(None);
         let rows: Vec<Row> = self
-            .filtered_data
+            .filtered_indices
             .iter()
-            .enumerate()
-            .map(|(_idx, item)| {
+            .filter_map(|&data_idx| self.current_data.get(data_idx))
+            .map(|item| {
                 let cells: Vec<Cell> = table_config
                     .columns
                     .iter()
@@ -2341,16 +2343,16 @@ impl App {
         } else if self.global_search.filter_active {
             format!(
                 "Filtered: {}/{} | Row {}/{}",
-                self.filtered_data.len(),
+                self.filtered_indices.len(),
                 self.current_data.len(),
                 self.selected_index + 1,
-                self.filtered_data.len()
+                self.filtered_indices.len()
             )
         } else {
             format!(
                 "Row {}/{}",
                 self.selected_index + 1,
-                self.filtered_data.len()
+                self.filtered_indices.len()
             )
         };
 
@@ -2660,81 +2662,116 @@ impl App {
     }
 
     fn apply_sort_and_filter(&mut self) {
-        // Start with all data
-        let mut data = self.current_data.clone();
+        // Start with all indices (optimized - no cloning!)
+        let mut indices: Vec<usize> = (0..self.current_data.len()).collect();
 
         // Apply global search filter if active
         if self.global_search.filter_active {
-            data = self.filter_data(&data);
+            indices = self.filter_data_indices(&indices);
         }
 
         // Apply sorting if configured
         if let Some(page) = globals::config().pages.get(&self.current_page) {
             if let ConfigView::Table(table_view) = &page.view {
                 if let Some(sort_config) = &table_view.sort {
-                    data = self.sort_data(&data, sort_config);
+                    self.sort_data_indices(&mut indices, sort_config);
                 }
             }
         }
 
-        self.filtered_data = data;
+        self.filtered_indices = indices;
     }
 
-    fn filter_data(&self, data: &[Value]) -> Vec<Value> {
-        data.iter()
-            .filter(|item| {
-                // Convert item to searchable string
-                let item_text = self.item_to_searchable_text(item);
-                // Use global search to match
-                self.global_search.matches(&item_text)
+    fn filter_data_indices(&self, indices: &[usize]) -> Vec<usize> {
+        indices
+            .iter()
+            .filter(|&&idx| {
+                if let Some(item) = self.current_data.get(idx) {
+                    // Convert item to searchable string
+                    let item_text = self.item_to_searchable_text(item);
+                    // Use global search to match
+                    self.global_search.matches(&item_text)
+                } else {
+                    false
+                }
             })
-            .cloned()
+            .copied()
             .collect()
     }
 
     fn item_to_searchable_text(&self, item: &Value) -> String {
-        match item {
-            Value::String(s) => s.clone(),
-            Value::Number(n) => n.to_string(),
-            Value::Bool(b) => b.to_string(),
-            Value::Array(arr) => arr
-                .iter()
-                .map(|v| self.item_to_searchable_text(v))
-                .collect::<Vec<_>>()
-                .join(" "),
-            Value::Object(map) => map
-                .values()
-                .map(|v| self.item_to_searchable_text(v))
-                .collect::<Vec<_>>()
-                .join(" "),
-            Value::Null => String::new(),
+        use std::fmt::Write;
+        
+        let mut buffer = String::with_capacity(256); // Preallocate for typical item
+        
+        fn collect_values(val: &Value, buffer: &mut String) {
+            match val {
+                Value::String(s) => {
+                    if !buffer.is_empty() {
+                        buffer.push(' ');
+                    }
+                    buffer.push_str(s);
+                }
+                Value::Number(n) => {
+                    if !buffer.is_empty() {
+                        buffer.push(' ');
+                    }
+                    write!(buffer, "{}", n).unwrap();
+                }
+                Value::Bool(b) => {
+                    if !buffer.is_empty() {
+                        buffer.push(' ');
+                    }
+                    write!(buffer, "{}", b).unwrap();
+                }
+                Value::Array(arr) => {
+                    for item in arr {
+                        collect_values(item, buffer);
+                    }
+                }
+                Value::Object(map) => {
+                    for value in map.values() {
+                        collect_values(value, buffer);
+                    }
+                }
+                Value::Null => {}
+            }
         }
+        
+        collect_values(item, &mut buffer);
+        buffer
     }
 
-    fn sort_data(
+    fn sort_data_indices(
         &self,
-        data: &[Value],
+        indices: &mut [usize],
         sort_config: &crate::config::schema::TableSort,
-    ) -> Vec<Value> {
+    ) {
         use crate::config::schema::SortOrder;
         use crate::data::JsonPathExtractor;
-
-        let mut sorted = data.to_vec();
 
         // Create extractor once for efficiency
         let extractor = match JsonPathExtractor::new(&sort_config.column) {
             Ok(ext) => ext,
-            Err(_) => return sorted, // Return unsorted if path is invalid
+            Err(_) => return, // Return unsorted if path is invalid
         };
 
-        sorted.sort_by(|a, b| {
-            let a_val = extractor.extract_single(a);
-            let b_val = extractor.extract_single(b);
+        indices.sort_by(|&a, &b| {
+            let a_item = self.current_data.get(a);
+            let b_item = self.current_data.get(b);
 
-            let cmp = match (&a_val, &b_val) {
-                (Ok(Some(av)), Ok(Some(bv))) => Self::compare_values(av, bv),
-                (Ok(Some(_)), Ok(None)) => std::cmp::Ordering::Less,
-                (Ok(None), Ok(Some(_))) => std::cmp::Ordering::Greater,
+            let cmp = match (a_item, b_item) {
+                (Some(a_data), Some(b_data)) => {
+                    let a_val = extractor.extract_single(a_data);
+                    let b_val = extractor.extract_single(b_data);
+
+                    match (&a_val, &b_val) {
+                        (Ok(Some(av)), Ok(Some(bv))) => Self::compare_values(av, bv),
+                        (Ok(Some(_)), Ok(None)) => std::cmp::Ordering::Less,
+                        (Ok(None), Ok(Some(_))) => std::cmp::Ordering::Greater,
+                        _ => std::cmp::Ordering::Equal,
+                    }
+                }
                 _ => std::cmp::Ordering::Equal,
             };
 
@@ -2743,8 +2780,6 @@ impl App {
                 SortOrder::Desc => cmp.reverse(),
             }
         });
-
-        sorted
     }
 
     fn compare_values(a: &Value, b: &Value) -> std::cmp::Ordering {

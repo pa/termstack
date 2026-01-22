@@ -1,5 +1,5 @@
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 /// A single frame in the navigation stack
 #[derive(Debug, Clone)]
@@ -21,38 +21,38 @@ impl NavigationFrame {
     }
 }
 
-/// Navigation stack for managing page history
+/// Navigation stack for managing page history (optimized with VecDeque for O(1) pop_front)
 #[derive(Debug, Clone)]
 pub struct NavigationStack {
-    frames: Vec<NavigationFrame>,
+    frames: VecDeque<NavigationFrame>,
     max_size: usize,
 }
 
 impl NavigationStack {
     pub fn new(max_size: usize) -> Self {
         Self {
-            frames: Vec::new(),
+            frames: VecDeque::new(),
             max_size,
         }
     }
 
     pub fn push(&mut self, frame: NavigationFrame) {
         if self.frames.len() >= self.max_size {
-            self.frames.remove(0);
+            self.frames.pop_front(); // O(1) operation with VecDeque
         }
-        self.frames.push(frame);
+        self.frames.push_back(frame);
     }
 
     pub fn pop(&mut self) -> Option<NavigationFrame> {
-        self.frames.pop()
+        self.frames.pop_back()
     }
 
     pub fn current(&self) -> Option<&NavigationFrame> {
-        self.frames.last()
+        self.frames.back()
     }
 
     pub fn current_mut(&mut self) -> Option<&mut NavigationFrame> {
-        self.frames.last_mut()
+        self.frames.back_mut()
     }
 
     pub fn len(&self) -> usize {
@@ -63,7 +63,7 @@ impl NavigationStack {
         self.frames.is_empty()
     }
 
-    pub fn frames(&self) -> &[NavigationFrame] {
+    pub fn frames(&self) -> &VecDeque<NavigationFrame> {
         &self.frames
     }
 }
