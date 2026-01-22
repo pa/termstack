@@ -69,6 +69,8 @@ pub struct TemplateContext {
     pub page_contexts: HashMap<String, Value>,
     /// Current row data (for inline rendering)
     pub current: Option<Value>,
+    /// Environment variables (loaded from system environment)
+    pub env: HashMap<String, Value>,
 }
 
 impl TemplateContext {
@@ -77,6 +79,7 @@ impl TemplateContext {
             globals: HashMap::new(),
             page_contexts: HashMap::new(),
             current: None,
+            env: Self::load_env_vars(),
         }
     }
 
@@ -86,6 +89,7 @@ impl TemplateContext {
             globals: HashMap::with_capacity(10),
             page_contexts: HashMap::with_capacity(5),
             current: None,
+            env: Self::load_env_vars(),
         }
     }
 
@@ -94,6 +98,19 @@ impl TemplateContext {
         self.globals.clear();
         self.page_contexts.clear();
         self.current = None;
+        self.env = Self::load_env_vars();
+    }
+
+    /// Load environment variables from the system
+    fn load_env_vars() -> HashMap<String, Value> {
+        std::env::vars()
+            .map(|(k, v)| (k, Value::String(v)))
+            .collect()
+    }
+
+    /// Reload environment variables (useful if env changes at runtime)
+    pub fn reload_env(&mut self) {
+        self.env = Self::load_env_vars();
     }
 
     pub fn with_globals(mut self, globals: HashMap<String, Value>) -> Self {
@@ -129,6 +146,9 @@ impl TemplateContext {
     /// Convert to Tera context
     pub fn to_tera_context(&self) -> Context {
         let mut context = Context::new();
+
+        // Add environment variables (first, so they can be overridden)
+        context.insert("env", &self.env);
 
         // Add globals
         for (key, value) in &self.globals {
@@ -212,5 +232,179 @@ mod tests {
         assert!(TemplateEngine::is_template("{{ var }}"));
         assert!(TemplateEngine::is_template("Hello {{ name }}!"));
         assert!(!TemplateEngine::is_template("Just a string"));
+    }
+
+    #[test]
+    fn test_env_var_interpolation() {
+        // Set test environment variable
+        unsafe {
+            std::env::set_var("TEST_VAR", "test_value");
+            std::env::set_var("TEST_API_KEY", "secret123");
+        }
+
+        let engine = TemplateEngine::new().unwrap();
+        let context = TemplateContext::new();
+
+        // Test basic env var
+        let result = engine
+            .render_string("Value: {{ env.TEST_VAR }}", &context)
+            .unwrap();
+        assert_eq!(result, "Value: test_value");
+
+        // Test API key pattern
+        let result = engine
+            .render_string("Bearer {{ env.TEST_API_KEY }}", &context)
+            .unwrap();
+        assert_eq!(result, "Bearer secret123");
+
+        // Cleanup
+        unsafe {
+            std::env::remove_var("TEST_VAR");
+            std::env::remove_var("TEST_API_KEY");
+        }
+    }
+
+    #[test]
+    fn test_env_var_in_header() {
+        unsafe {
+            std::env::set_var("GITHUB_TOKEN", "ghp_test_token");
+        }
+
+        let engine = TemplateEngine::new().unwrap();
+        let context = TemplateContext::new();
+
+        let result = engine
+            .render_string("Authorization: Bearer {{ env.GITHUB_TOKEN }}", &context)
+            .unwrap();
+        assert_eq!(result, "Authorization: Bearer ghp_test_token");
+
+        unsafe {
+            std::env::remove_var("GITHUB_TOKEN");
+        }
+    }
+
+    #[test]
+    fn test_env_var_with_default() {
+        let engine = TemplateEngine::new().unwrap();
+        let context = TemplateContext::new();
+
+        // Test with non-existent var using default filter
+        let result = engine
+            .render_string(
+                "{{ env.NONEXISTENT | default(value='fallback') }}",
+                &context,
+            )
+            .unwrap();
+        assert_eq!(result, "fallback");
+
+        // Test with existing var
+        unsafe {
+            std::env::set_var("EXISTING_VAR", "real_value");
+        }
+        let context = TemplateContext::new(); // Reload env
+        let result = engine
+            .render_string(
+                "{{ env.EXISTING_VAR | default(value='fallback') }}",
+                &context,
+            )
+            .unwrap();
+        assert_eq!(result, "real_value");
+
+        unsafe {
+            std::env::remove_var("EXISTING_VAR");
+        }
+    }
+
+    #[test]
+    fn test_env_var_reload() {
+        unsafe {
+            std::env::set_var("DYNAMIC_VAR", "initial");
+        }
+
+        let engine = TemplateEngine::new().unwrap();
+        let mut context = TemplateContext::new();
+
+        let result = engine
+            .render_string("{{ env.DYNAMIC_VAR }}", &context)
+            .unwrap();
+        assert_eq!(result, "initial");
+
+        // Change environment variable
+        unsafe {
+            std::env::set_var("DYNAMIC_VAR", "updated");
+        }
+
+        // Reload environment variables
+        context.reload_env();
+
+        let result = engine
+            .render_string("{{ env.DYNAMIC_VAR }}", &context)
+            .unwrap();
+        assert_eq!(result, "updated");
+
+        unsafe {
+            std::env::remove_var("DYNAMIC_VAR");
+        }
+    }
+
+    #[test]
+    fn test_env_vars_with_globals() {
+        unsafe {
+            std::env::set_var("API_BASE", "https://api.example.com");
+            std::env::set_var("API_KEY", "secret");
+        }
+
+        let engine = TemplateEngine::new().unwrap();
+        let mut context = TemplateContext::new();
+
+        // Globals can reference env vars (would happen during config load)
+        context
+            .globals
+            .insert("api_base".to_string(), json!("https://api.example.com"));
+        context
+            .globals
+            .insert("endpoint".to_string(), json!("/users"));
+
+        // Template can use both env vars and globals
+        let result = engine
+            .render_string(
+                "{{ api_base }}{{ endpoint }}?key={{ env.API_KEY }}",
+                &context,
+            )
+            .unwrap();
+        assert_eq!(result, "https://api.example.com/users?key=secret");
+
+        unsafe {
+            std::env::remove_var("API_BASE");
+            std::env::remove_var("API_KEY");
+        }
+    }
+
+    #[test]
+    fn test_env_vars_in_url_template() {
+        unsafe {
+            std::env::set_var("TEST_GITHUB_API", "https://api.github.com");
+            std::env::set_var("TEST_AUTH_TOKEN", "ghp_token123");
+        }
+
+        let engine = TemplateEngine::new().unwrap();
+        let context = TemplateContext::new();
+
+        // Simulate URL template
+        let result = engine
+            .render_string("{{ env.TEST_GITHUB_API }}/user/repos", &context)
+            .unwrap();
+        assert_eq!(result, "https://api.github.com/user/repos");
+
+        // Simulate header template
+        let result = engine
+            .render_string("Bearer {{ env.TEST_AUTH_TOKEN }}", &context)
+            .unwrap();
+        assert_eq!(result, "Bearer ghp_token123");
+
+        unsafe {
+            std::env::remove_var("TEST_GITHUB_API");
+            std::env::remove_var("TEST_AUTH_TOKEN");
+        }
     }
 }
