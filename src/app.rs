@@ -959,6 +959,21 @@ impl App {
         context
     }
 
+    /// Update protected pages in NavigationContext based on current navigation stack
+    /// Protected pages won't be evicted from the LRU cache
+    fn update_protected_pages(&mut self) {
+        // Clear existing protections
+        self.nav_context.clear_protected();
+
+        // Protect all pages in the navigation stack (active navigation path)
+        for frame in self.nav_stack.frames() {
+            self.nav_context.protect_page(&frame.page_id);
+        }
+
+        // Also protect the current page
+        self.nav_context.protect_page(&self.current_page);
+    }
+
     async fn execute_action(&mut self, action: &crate::config::schema::Action) {
         // Create template context for rendering custom messages
         let selected_row = self.get_selected_row();
@@ -1142,6 +1157,9 @@ impl App {
         self.selected_index = 0;
         self.scroll_offset = 0;
 
+        // Update protected pages in context cache (prevent eviction of active nav path)
+        self.update_protected_pages();
+
         // Load new page data
         self.load_current_page().await;
     }
@@ -1261,6 +1279,10 @@ impl App {
             self.current_page = frame.page_id;
             self.selected_index = frame.selected_index;
             self.scroll_offset = frame.scroll_offset;
+
+            // Update protected pages in context cache (popped page is no longer protected)
+            self.update_protected_pages();
+
             self.load_current_page().await;
         }
     }
@@ -1342,6 +1364,10 @@ impl App {
 
         // Navigate to next page
         self.current_page = next_page.clone();
+
+        // Update protected pages in context cache (prevent eviction of active nav path)
+        self.update_protected_pages();
+
         self.load_current_page().await;
     }
 
