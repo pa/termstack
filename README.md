@@ -9,11 +9,11 @@
 </p>
 
 <p align="center">
+  <a href="#-claude-code-integration-ai-powered-yaml-generation">AI Generation</a> •
   <a href="#features">Features</a> •
   <a href="#quick-start">Quick Start</a> •
   <a href="#examples">Examples</a> •
   <a href="#configuration">Configuration</a> •
-  <a href="#keybindings">Keybindings</a> •
   <a href="#contributing">Contributing</a>
 </p>
 
@@ -39,6 +39,65 @@ Think of it as "k9s for anything" — Kubernetes, REST APIs, dog breeds (yes, re
 ### HTTP Adapter (Dog API Browser)
 
 ![API Demo](assets/api-demo.gif)
+
+## 🤖 Claude Code Integration (AI-Powered YAML Generation!)
+
+**The fastest way to build TermStack configs** — Just describe what you want in plain English!
+
+TermStack includes a Claude Code skill that auto-generates complete YAML configurations from natural language. Stop writing YAML manually and let AI handle the syntax, structure, and best practices.
+
+### Quick Start
+
+In Claude Code, just run:
+
+```bash
+/termstack "browse the Dog API and show breeds with their life expectancy"
+```
+
+Claude will:
+1. ✅ Research the API (if needed)
+2. ✅ Generate a complete, working YAML config
+3. ✅ Save it to `examples/` 
+4. ✅ Give you the command to run it
+
+### What It Generates
+
+The skill knows about **all** TermStack features:
+- ✅ HTTP, CLI, Script, and Stream adapters
+- ✅ Table, Text, and Logs views
+- ✅ Conditional navigation and actions
+- ✅ Styling, transforms, and filters
+- ✅ Multi-page navigation with context passing
+- ✅ Authentication patterns (Bearer tokens, API keys, etc.)
+- ✅ Environment variable usage for secrets
+
+### Example Prompts
+
+```bash
+# Browse any REST API
+/termstack "create a GitHub repository browser with issues and PRs"
+
+# Kubernetes dashboards
+/termstack "k9s-style interface for viewing pods and logs"
+
+# AWS CLI integration
+/termstack "browse S3 buckets and view object lists"
+
+# Custom APIs
+/termstack "browse JSONPlaceholder posts and comments with user details"
+```
+
+**No more copy-pasting from docs.** Just describe what you want and let Claude figure out the YAML indentation (the hardest part, honestly).
+
+### Learn More
+
+- 📖 [Complete Documentation](docs/README.md) - Guides, cookbooks, and references
+- 🔑 [Authentication Guide](docs/guides/authentication.md) - HTTP APIs & CLI auth patterns
+- 📝 [Templates & Context](docs/guides/templates-and-context.md) - Variables, navigation, filters
+- 🍳 [GitHub API Cookbook](docs/cookbook/github-api.md) - Real-world example
+- ☁️ [AWS CLI Cookbook](docs/cookbook/aws-cli.md) - CLI integration patterns
+
+---
 
 ## Features
 
@@ -365,35 +424,6 @@ transform: "{{ value | upper }}"  # "SHOUTING"
 | `a` | Action mode |
 | `r` | Refresh |
 | `q` | Quit |
-
-## Claude Code Integration
-
-TermStack includes a Claude Code skill that auto-generates YAML configurations from natural language prompts. Because writing YAML is so 2024.
-
-### Using the Skill
-
-In Claude Code, just run:
-
-```
-/termstack "browse the Dog API and show breeds with their life expectancy"
-```
-
-Claude will:
-1. Research the API (if needed)
-2. Generate a complete, working YAML config
-3. Save it to `examples/`
-4. Give you the command to run it
-
-### What It Generates
-
-The skill knows about all TermStack features:
-- HTTP, CLI, Script, and Stream adapters
-- Table, Text, and Logs views
-- Conditional navigation and actions
-- Styling, transforms, and filters
-- Multi-page navigation with context passing
-
-No more copy-pasting from docs. Just describe what you want and let Claude figure out the YAML indentation (the hardest part, honestly).
 
 ## Architecture
 
