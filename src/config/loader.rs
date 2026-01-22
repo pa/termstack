@@ -40,7 +40,7 @@ pages:
       command: "echo"
       args: ["hello"]
     view:
-      layout: table
+      type: table
       columns:
         - path: "$.name"
           display: "Name"

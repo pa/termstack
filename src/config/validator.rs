@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use std::collections::HashSet;
 
 use super::schema::{Config, DataSource, DataSourceType, SingleDataSource};
@@ -285,7 +285,7 @@ pages:
       command: "echo"
       args: ["hello"]
     view:
-      layout: table
+      type: table
       columns:
         - path: "$.name"
           display: "Name"
@@ -310,7 +310,7 @@ pages:
       type: cli
       command: "echo"
     view:
-      layout: table
+      type: table
       columns: []
 "#;
 
@@ -334,7 +334,7 @@ pages:
       type: cli
       command: "echo"
     view:
-      layout: table
+      type: table
       columns: []
 "#;
 
