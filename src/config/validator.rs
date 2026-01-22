@@ -203,11 +203,10 @@ impl ConfigValidator {
         }
 
         // Validate page reference if present
-        if let Some(page) = &action.page {
-            if !page_ids.contains(page) {
+        if let Some(page) = &action.page
+            && !page_ids.contains(page) {
                 return Err(anyhow!("Action page '{}' not found", page));
             }
-        }
 
         // Validate builtin actions
         if let Some(builtin) = &action.builtin {

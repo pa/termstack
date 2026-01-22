@@ -43,7 +43,7 @@ impl JsonPathExtractor {
         }
 
         let nodes = self.path.query(data);
-        let values: Vec<Value> = nodes.all().into_iter().map(|v| v.clone()).collect();
+        let values: Vec<Value> = nodes.all().into_iter().cloned().collect();
 
         if values.is_empty() {
             // If no results, return empty array

@@ -14,6 +14,12 @@ use crate::template::engine::{TemplateContext, TemplateEngine};
 /// CLI command data adapter
 pub struct CliAdapter;
 
+impl Default for CliAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CliAdapter {
     pub fn new() -> Self {
         Self
@@ -203,14 +209,14 @@ fn parse_duration(s: &str) -> Result<Duration> {
         return Err(anyhow!("Empty duration string"));
     }
 
-    let (num_str, unit) = if s.ends_with("ms") {
-        (&s[..s.len() - 2], "ms")
-    } else if s.ends_with('s') {
-        (&s[..s.len() - 1], "s")
-    } else if s.ends_with('m') {
-        (&s[..s.len() - 1], "m")
-    } else if s.ends_with('h') {
-        (&s[..s.len() - 1], "h")
+    let (num_str, unit) = if let Some(stripped) = s.strip_suffix("ms") {
+        (stripped, "ms")
+    } else if let Some(stripped) = s.strip_suffix('s') {
+        (stripped, "s")
+    } else if let Some(stripped) = s.strip_suffix('m') {
+        (stripped, "m")
+    } else if let Some(stripped) = s.strip_suffix('h') {
+        (stripped, "h")
     } else {
         // Default to seconds if no unit
         (s, "s")

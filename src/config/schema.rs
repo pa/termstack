@@ -147,16 +147,11 @@ impl SingleDataSource {
     pub fn get_adapter_name(&self) -> Option<String> {
         if let Some(adapter) = &self.adapter {
             Some(adapter.clone())
-        } else if let Some(source_type) = &self.source_type {
-            // Map old type to adapter name
-            Some(match source_type {
+        } else { self.source_type.as_ref().map(|source_type| match source_type {
                 DataSourceType::Cli => "cli".to_string(),
                 DataSourceType::Http => "http".to_string(),
                 DataSourceType::Stream => "stream".to_string(),
-            })
-        } else {
-            None
-        }
+            }) }
     }
 }
 
@@ -228,7 +223,9 @@ pub enum DataSourceType {
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "UPPERCASE")]
+#[derive(Default)]
 pub enum HttpMethod {
+    #[default]
     GET,
     POST,
     PUT,
@@ -236,11 +233,6 @@ pub enum HttpMethod {
     PATCH,
 }
 
-impl Default for HttpMethod {
-    fn default() -> Self {
-        HttpMethod::GET
-    }
-}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
@@ -316,16 +308,13 @@ pub struct TableSort {
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum SortOrder {
+    #[default]
     Asc,
     Desc,
 }
 
-impl Default for SortOrder {
-    fn default() -> Self {
-        SortOrder::Asc
-    }
-}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LogsView {

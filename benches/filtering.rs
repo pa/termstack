@@ -19,7 +19,7 @@ fn generate_test_data(size: usize) -> Vec<Value> {
 // Simulate current cloning behavior
 fn filter_with_clone(data: &[Value], query: &str) -> Vec<Value> {
     // Clone the entire dataset first (current behavior)
-    let mut cloned_data = data.to_vec();
+    let cloned_data = data.to_vec();
 
     // Filter the cloned data
     cloned_data

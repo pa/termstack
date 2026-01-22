@@ -35,19 +35,17 @@ impl ActionExecutor {
         let template_ctx = Self::hashmap_to_context(context);
 
         // Page navigation action
-        if let Some(page) = &action.page {
-            if !page.is_empty() {
+        if let Some(page) = &action.page
+            && !page.is_empty() {
                 // Page navigation is handled by the app itself
                 return Ok(ActionResult::Navigate(page.clone(), action.context.clone()));
             }
-        }
 
         // CLI action (check for non-empty string)
-        if let Some(command) = &action.command {
-            if !command.is_empty() {
+        if let Some(command) = &action.command
+            && !command.is_empty() {
                 return self.execute_cli(action, command, &template_ctx).await;
             }
-        }
 
         // HTTP action
         if let Some(http) = &action.http {
@@ -55,22 +53,20 @@ impl ActionExecutor {
         }
 
         // TODO: Script action
-        if let Some(script) = &action.script {
-            if !script.is_empty() {
+        if let Some(script) = &action.script
+            && !script.is_empty() {
                 return Err(TermStackError::Config(
                     "Script actions not yet implemented".to_string(),
                 ));
             }
-        }
 
         // TODO: Builtin action
-        if let Some(builtin) = &action.builtin {
-            if !builtin.is_empty() {
+        if let Some(builtin) = &action.builtin
+            && !builtin.is_empty() {
                 return Err(TermStackError::Config(
                     "Builtin actions not yet implemented".to_string(),
                 ));
             }
-        }
 
         Err(TermStackError::Config(format!(
             "Action '{}' must have command, http, script, builtin, or page specified",
@@ -122,7 +118,7 @@ impl ActionExecutor {
             .args(&rendered_args)
             .output()
             .await
-            .map_err(|e| TermStackError::Io(e))?;
+            .map_err(TermStackError::Io)?;
 
         if output.status.success() {
             let message = if let Some(msg) = &action.success_message {
@@ -132,7 +128,7 @@ impl ActionExecutor {
                         .map_err(|e| TermStackError::Template(e.to_string()))?,
                 )
             } else {
-                Some(format!("Command executed successfully"))
+                Some("Command executed successfully".to_string())
             };
 
             if action.refresh {
@@ -194,7 +190,7 @@ impl ActionExecutor {
         }
 
         // Execute request
-        let response = request.send().await.map_err(|e| TermStackError::Http(e))?;
+        let response = request.send().await.map_err(TermStackError::Http)?;
 
         if response.status().is_success() {
             let message = if let Some(msg) = &action.success_message {
@@ -204,7 +200,7 @@ impl ActionExecutor {
                         .map_err(|e| TermStackError::Template(e.to_string()))?,
                 )
             } else {
-                Some(format!("HTTP request succeeded"))
+                Some("HTTP request succeeded".to_string())
             };
 
             if action.refresh {

@@ -24,6 +24,7 @@ use regex::Regex;
 
 /// Global search state that works across all views
 #[derive(Debug, Clone)]
+#[derive(Default)]
 struct GlobalSearch {
     /// Whether search input is active
     active: bool,
@@ -37,17 +38,6 @@ struct GlobalSearch {
     case_sensitive: bool,
 }
 
-impl Default for GlobalSearch {
-    fn default() -> Self {
-        Self {
-            active: false,
-            query: String::new(),
-            filter_active: false,
-            regex_pattern: None,
-            case_sensitive: false,
-        }
-    }
-}
 
 impl GlobalSearch {
     /// Compile the query into a regex pattern
@@ -299,12 +289,11 @@ impl App {
             self.check_stream_updates();
 
             // Auto-dismiss notifications after 3 seconds
-            if let Some(msg) = &self.action_message {
-                if msg.timestamp.elapsed() > std::time::Duration::from_secs(3) {
+            if let Some(msg) = &self.action_message
+                && msg.timestamp.elapsed() > std::time::Duration::from_secs(3) {
                     self.action_message = None;
                     self.needs_render = true;
                 }
-            }
 
             // Only render if needed (data changed, user input, etc.)
             if self.needs_render {
@@ -316,15 +305,13 @@ impl App {
             }
 
             // Poll for user input with timeout
-            if let Ok(true) = event::poll(std::time::Duration::from_millis(100)) {
-                if let Event::Key(key) = event::read()? {
-                    if key.kind == KeyEventKind::Press {
+            if let Ok(true) = event::poll(std::time::Duration::from_millis(100))
+                && let Event::Key(key) = event::read()?
+                    && key.kind == KeyEventKind::Press {
                         self.handle_key(key).await;
                         // Don't auto-render on every key press - let handlers decide
                         // This allows pause mode to truly freeze the display
                     }
-                }
-            }
         }
 
         Ok(())
@@ -1161,19 +1148,18 @@ impl App {
 
     fn move_down(&mut self) {
         // Check if we're in a text view
-        if let Some(page) = globals::config().pages.get(&self.current_page) {
-            if matches!(page.view, ConfigView::Text(_)) {
+        if let Some(page) = globals::config().pages.get(&self.current_page)
+            && matches!(page.view, ConfigView::Text(_)) {
                 // Text view: scroll down by one line
                 self.scroll_offset += 1;
                 self.needs_render = true;
                 return;
             }
-        }
 
         let max_index = if self.stream_active || !self.stream_buffer.is_empty() {
             // Stream mode: use display buffer (frozen snapshot if paused)
             let display_buffer_len =
-                if self.stream_paused && self.stream_frozen_snapshot.as_ref().map_or(false, |s| !s.is_empty()) {
+                if self.stream_paused && self.stream_frozen_snapshot.as_ref().is_some_and(|s| !s.is_empty()) {
                     self.stream_frozen_snapshot.as_ref().unwrap().len()
                 } else {
                     self.stream_buffer.len()
@@ -1199,8 +1185,8 @@ impl App {
 
     fn move_up(&mut self) {
         // Check if we're in a text view
-        if let Some(page) = globals::config().pages.get(&self.current_page) {
-            if matches!(page.view, ConfigView::Text(_)) {
+        if let Some(page) = globals::config().pages.get(&self.current_page)
+            && matches!(page.view, ConfigView::Text(_)) {
                 // Text view: scroll up by one line
                 if self.scroll_offset > 0 {
                     self.scroll_offset -= 1;
@@ -1208,7 +1194,6 @@ impl App {
                 }
                 return;
             }
-        }
 
         if self.selected_index > 0 {
             self.selected_index -= 1;
@@ -1219,14 +1204,13 @@ impl App {
 
     fn move_top(&mut self) {
         // Check if we're in a text view
-        if let Some(page) = globals::config().pages.get(&self.current_page) {
-            if matches!(page.view, ConfigView::Text(_)) {
+        if let Some(page) = globals::config().pages.get(&self.current_page)
+            && matches!(page.view, ConfigView::Text(_)) {
                 // Text view: scroll to top
                 self.scroll_offset = 0;
                 self.needs_render = true;
                 return;
             }
-        }
 
         self.selected_index = 0;
         // Always render cursor movement, even when paused
@@ -1235,20 +1219,19 @@ impl App {
 
     fn move_bottom(&mut self) {
         // Check if we're in a text view
-        if let Some(page) = globals::config().pages.get(&self.current_page) {
-            if matches!(page.view, ConfigView::Text(_)) {
+        if let Some(page) = globals::config().pages.get(&self.current_page)
+            && matches!(page.view, ConfigView::Text(_)) {
                 // Text view: scroll to bottom (will be clamped in render_text)
                 self.scroll_offset = usize::MAX;
                 self.needs_render = true;
                 return;
             }
-        }
 
         if self.stream_active || !self.stream_buffer.is_empty() {
             // Stream mode - jumping to bottom does NOT change pause state
             // Use display buffer (frozen snapshot if paused)
             let display_buffer_len =
-                if self.stream_paused && self.stream_frozen_snapshot.as_ref().map_or(false, |s| !s.is_empty()) {
+                if self.stream_paused && self.stream_frozen_snapshot.as_ref().is_some_and(|s| !s.is_empty()) {
                     self.stream_frozen_snapshot.as_ref().unwrap().len()
                 } else {
                     self.stream_buffer.len()
@@ -1311,8 +1294,8 @@ impl App {
                     }
 
                     // Evaluate condition if present
-                    if let Some(condition) = &cond.condition {
-                        if let Some(row) = selected_row {
+                    if let Some(condition) = &cond.condition
+                        && let Some(row) = selected_row {
                             let ctx = self.create_template_context(Some(row));
                             let matches = globals::template_engine()
                                 .render_string(condition, &ctx)
@@ -1324,7 +1307,6 @@ impl App {
                                 break;
                             }
                         }
-                    }
                 }
 
                 // Use first matching condition, or fall back to default
@@ -1344,11 +1326,10 @@ impl App {
         // Capture context from selected row
         if let Some(selected_row) = self.get_selected_row().cloned() {
             for (key, json_path) in context_map {
-                if let Ok(extractor) = JsonPathExtractor::new(json_path) {
-                    if let Ok(Some(value)) = extractor.extract_single(&selected_row) {
+                if let Ok(extractor) = JsonPathExtractor::new(json_path)
+                    && let Ok(Some(value)) = extractor.extract_single(&selected_row) {
                         self.nav_context.set_page_context(key.clone(), value);
                     }
-                }
             }
 
             // Also store the entire selected row under the current page name
@@ -1669,24 +1650,18 @@ impl App {
                     .render_string(condition, &ctx)
                     .map(|result| result.trim() == "true")
                     .unwrap_or(false)
-            } else if style_rule.default {
-                true
-            } else {
-                false
-            };
+            } else { style_rule.default };
 
             if matches {
                 // Apply this style
-                if let Some(color_str) = &style_rule.color {
-                    if let Some(color) = Self::parse_color(color_str) {
+                if let Some(color_str) = &style_rule.color
+                    && let Some(color) = Self::parse_color(color_str) {
                         style = style.fg(color);
                     }
-                }
-                if let Some(bg_str) = &style_rule.bg {
-                    if let Some(bg_color) = Self::parse_color(bg_str) {
+                if let Some(bg_str) = &style_rule.bg
+                    && let Some(bg_color) = Self::parse_color(bg_str) {
                         style = style.bg(bg_color);
                     }
-                }
                 if style_rule.bold {
                     style = style.add_modifier(Modifier::BOLD);
                 }
@@ -1713,24 +1688,18 @@ impl App {
                     .render_string(condition, &ctx)
                     .map(|result| result.trim() == "true")
                     .unwrap_or(false)
-            } else if style_rule.default {
-                true
-            } else {
-                false
-            };
+            } else { style_rule.default };
 
             if matches {
                 // Apply this style
-                if let Some(color_str) = &style_rule.color {
-                    if let Some(color) = Self::parse_color(color_str) {
+                if let Some(color_str) = &style_rule.color
+                    && let Some(color) = Self::parse_color(color_str) {
                         style = style.fg(color);
                     }
-                }
-                if let Some(bg_str) = &style_rule.bg {
-                    if let Some(bg_color) = Self::parse_color(bg_str) {
+                if let Some(bg_str) = &style_rule.bg
+                    && let Some(bg_color) = Self::parse_color(bg_str) {
                         style = style.bg(bg_color);
                     }
-                }
                 if style_rule.bold {
                     style = style.add_modifier(Modifier::BOLD);
                 }
@@ -2087,11 +2056,10 @@ impl App {
             let visible_height = area.height.saturating_sub(2) as usize; // Account for borders
 
             // When follow is enabled, ensure we stay at the bottom of the buffer
-            if self.logs_follow && !self.stream_paused {
-                if !display_buffer.is_empty() {
+            if self.logs_follow && !self.stream_paused
+                && !display_buffer.is_empty() {
                     self.selected_index = display_buffer.len() - 1;
                 }
-            }
 
             // Ensure selected_index is within bounds of the display buffer
             if !display_buffer.is_empty() {
@@ -2119,14 +2087,16 @@ impl App {
             let content_width = area.width.saturating_sub(4) as usize; // Account for borders and padding
             let mut lines: Vec<Line> = Vec::new();
 
-            for i in start_line..total_lines.min(start_line + visible_height) {
+            for &actual_idx in filtered_indices
+                .iter()
+                .skip(start_line)
+                .take(total_lines.saturating_sub(start_line).min(visible_height))
+            {
                 // When wrapping is disabled, limit the number of lines to visible height
                 // When wrapping is enabled, don't limit since lines may wrap to multiple rows
                 if !self.logs_wrap && lines.len() >= visible_height {
                     break;
                 }
-
-                let actual_idx = filtered_indices[i];
                 let line = &display_buffer[actual_idx];
                 let display_line = line.clone();
 
@@ -2298,7 +2268,7 @@ impl App {
 
         let row_info = if self.stream_active {
             // Use frozen snapshot size when paused, otherwise use live buffer
-            let buffer_len = if self.stream_paused && self.stream_frozen_snapshot.as_ref().map_or(false, |s| !s.is_empty()) {
+            let buffer_len = if self.stream_paused && self.stream_frozen_snapshot.as_ref().is_some_and(|s| !s.is_empty()) {
                 self.stream_frozen_snapshot.as_ref().unwrap().len()
             } else {
                 self.stream_buffer.len()
@@ -2347,7 +2317,7 @@ impl App {
                             .flat_map(|a| {
                                 vec![
                                     Span::styled(
-                                        format!("{}", a.key),
+                                        a.key.to_string(),
                                         Style::default()
                                             .fg(Color::Yellow)
                                             .add_modifier(Modifier::BOLD),
@@ -2640,13 +2610,11 @@ impl App {
         }
 
         // Apply sorting if configured
-        if let Some(page) = globals::config().pages.get(&self.current_page) {
-            if let ConfigView::Table(table_view) = &page.view {
-                if let Some(sort_config) = &table_view.sort {
+        if let Some(page) = globals::config().pages.get(&self.current_page)
+            && let ConfigView::Table(table_view) = &page.view
+                && let Some(sort_config) = &table_view.sort {
                     self.sort_data_indices(&mut indices, sort_config);
                 }
-            }
-        }
 
         self.filtered_indices = indices;
     }
