@@ -519,6 +519,7 @@ aws ec2 describe-instances --region us-west-2
 ## See Also
 
 - [Authentication Guide](../guides/authentication.md) - Comprehensive auth documentation
+- [Templates & Context Guide](../guides/templates-and-context.md) - Template syntax and navigation
 - [GitHub API Example](github-api.md) - Similar example for HTTP APIs
 - [Documentation Hub](../README.md) - Central documentation index
 - [AWS CLI Documentation](https://docs.aws.amazon.com/cli/) - Official AWS CLI docs

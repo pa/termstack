@@ -13,7 +13,7 @@
 
 ### Guides
 - **[⭐ Authentication Guide](guides/authentication.md)** - **HTTP APIs & CLI authentication**
-- [Templates & Context](../README.md#template-filters) - Tera template syntax
+- **[⭐ Templates & Context](guides/templates-and-context.md)** - **Template syntax, variables, navigation**
 - [Configuration](../README.md#configuration) - YAML configuration overview
 
 ### Cookbook (Real Examples)

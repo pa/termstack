@@ -887,6 +887,7 @@ data:
 
 ## See Also
 
-- [Documentation Hub](../README.md) - Central documentation index
+- [Templates & Context Guide](templates-and-context.md) - Template syntax and variable usage
 - [GitHub API Cookbook](../cookbook/github-api.md) - Complete GitHub integration example
 - [AWS CLI Cookbook](../cookbook/aws-cli.md) - Complete AWS integration example
+- [Documentation Hub](../README.md) - Central documentation index

@@ -662,5 +662,6 @@ pages:
 ## See Also
 
 - [Authentication Guide](../guides/authentication.md) - Comprehensive auth documentation
+- [Templates & Context Guide](../guides/templates-and-context.md) - Template syntax and navigation
 - [AWS CLI Integration](aws-cli.md) - Similar example for AWS
 - [Documentation Hub](../README.md) - Central documentation index
