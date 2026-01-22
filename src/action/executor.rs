@@ -1,6 +1,7 @@
 use crate::config::schema::{Action, HttpAction, HttpMethod};
 use crate::error::{Result, TermStackError};
 use crate::template::engine::{TemplateContext, TemplateEngine};
+use crate::globals;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -15,14 +16,13 @@ pub enum ActionResult {
 
 pub struct ActionExecutor {
     template_engine: Arc<TemplateEngine>,
-    http_client: reqwest::Client,
+    // No longer store http_client - use global instead
 }
 
 impl ActionExecutor {
     pub fn new(template_engine: Arc<TemplateEngine>) -> Self {
         Self {
             template_engine,
-            http_client: reqwest::Client::new(),
         }
     }
 
@@ -165,13 +165,14 @@ impl ActionExecutor {
             .render_string(&http.url, context)
             .map_err(|e| TermStackError::Template(e.to_string()))?;
 
-        // Build request
+        // Build request using global HTTP client
+        let client = globals::http_client();
         let mut request = match http.method {
-            HttpMethod::GET => self.http_client.get(&rendered_url),
-            HttpMethod::POST => self.http_client.post(&rendered_url),
-            HttpMethod::PUT => self.http_client.put(&rendered_url),
-            HttpMethod::DELETE => self.http_client.delete(&rendered_url),
-            HttpMethod::PATCH => self.http_client.patch(&rendered_url),
+            HttpMethod::GET => client.get(&rendered_url),
+            HttpMethod::POST => client.post(&rendered_url),
+            HttpMethod::PUT => client.put(&rendered_url),
+            HttpMethod::DELETE => client.delete(&rendered_url),
+            HttpMethod::PATCH => client.patch(&rendered_url),
         };
 
         // Add headers

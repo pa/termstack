@@ -179,7 +179,7 @@ pub struct App {
     stream_active: bool,
     stream_paused: bool,
     stream_buffer: VecDeque<String>,
-    stream_frozen_snapshot: VecDeque<String>, // Frozen snapshot when paused
+    stream_frozen_snapshot: Option<Arc<VecDeque<String>>>, // Frozen snapshot when paused (Arc for efficient cloning)
     stream_receiver: Option<mpsc::Receiver<StreamMessage>>,
     stream_status: StreamStatus,
 
@@ -267,7 +267,7 @@ impl App {
             stream_active: false,
             stream_paused: false,
             stream_buffer: VecDeque::new(),
-            stream_frozen_snapshot: VecDeque::new(),
+            stream_frozen_snapshot: None,
             stream_receiver: None,
             stream_status: StreamStatus::Idle,
             logs_follow: true,
@@ -834,7 +834,7 @@ impl App {
                         self.stream_paused = false;
                         self.logs_follow = true;
                         // Clear the frozen snapshot
-                        self.stream_frozen_snapshot.clear();
+                        self.stream_frozen_snapshot = None;
                         if !self.stream_buffer.is_empty() {
                             self.selected_index = self.stream_buffer.len() - 1;
                         }
@@ -844,7 +844,7 @@ impl App {
                         self.stream_paused = true;
                         self.logs_follow = false;
                         // Take a snapshot of the current buffer
-                        self.stream_frozen_snapshot = self.stream_buffer.clone();
+                        self.stream_frozen_snapshot = Some(Arc::new(self.stream_buffer.clone()));
                         self.needs_render = true; // Force render to update status indicator
                     }
                 }
@@ -1208,8 +1208,8 @@ impl App {
         let max_index = if self.stream_active || !self.stream_buffer.is_empty() {
             // Stream mode: use display buffer (frozen snapshot if paused)
             let display_buffer_len =
-                if self.stream_paused && !self.stream_frozen_snapshot.is_empty() {
-                    self.stream_frozen_snapshot.len()
+                if self.stream_paused && self.stream_frozen_snapshot.as_ref().map_or(false, |s| !s.is_empty()) {
+                    self.stream_frozen_snapshot.as_ref().unwrap().len()
                 } else {
                     self.stream_buffer.len()
                 };
@@ -1283,8 +1283,8 @@ impl App {
             // Stream mode - jumping to bottom does NOT change pause state
             // Use display buffer (frozen snapshot if paused)
             let display_buffer_len =
-                if self.stream_paused && !self.stream_frozen_snapshot.is_empty() {
-                    self.stream_frozen_snapshot.len()
+                if self.stream_paused && self.stream_frozen_snapshot.as_ref().map_or(false, |s| !s.is_empty()) {
+                    self.stream_frozen_snapshot.as_ref().unwrap().len()
                 } else {
                     self.stream_buffer.len()
                 };
@@ -2087,8 +2087,12 @@ impl App {
         // For streaming logs, render from stream buffer
         if self.stream_active || !self.stream_buffer.is_empty() {
             // Use frozen snapshot when paused, otherwise use live buffer
-            let display_buffer = if self.stream_paused && !self.stream_frozen_snapshot.is_empty() {
-                &self.stream_frozen_snapshot
+            let display_buffer: &VecDeque<String> = if self.stream_paused {
+                if let Some(ref snapshot) = self.stream_frozen_snapshot {
+                    snapshot.as_ref()
+                } else {
+                    &self.stream_buffer
+                }
             } else {
                 &self.stream_buffer
             };
@@ -2329,8 +2333,8 @@ impl App {
 
         let row_info = if self.stream_active {
             // Use frozen snapshot size when paused, otherwise use live buffer
-            let buffer_len = if self.stream_paused && !self.stream_frozen_snapshot.is_empty() {
-                self.stream_frozen_snapshot.len()
+            let buffer_len = if self.stream_paused && self.stream_frozen_snapshot.as_ref().map_or(false, |s| !s.is_empty()) {
+                self.stream_frozen_snapshot.as_ref().unwrap().len()
             } else {
                 self.stream_buffer.len()
             };
