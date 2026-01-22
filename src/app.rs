@@ -588,44 +588,8 @@ impl App {
     }
 
     async fn fetch_page_data(&self, page: &crate::config::Page) -> Result<Vec<Value>> {
-        use crate::config::DataSource;
-
-        let data_source = &page.data;
-
-        match data_source {
-            DataSource::SingleOrStream(crate::config::SingleOrStream::Single(single)) => {
-                // Create data context for template rendering
-                let data_context = crate::data::provider::DataContext {
-                    globals: self.nav_context.globals.clone(),
-                    page_contexts: self.nav_context.page_contexts.clone(),
-                };
-
-                // Fetch data using adapter registry
-                let result = self
-                    .adapter_registry
-                    .fetch(single, &data_context)
-                    .await
-                    .map_err(|e| crate::error::TermStackError::DataProvider(e.to_string()))?;
-
-                // Extract items using JSONPath
-                let items = if let Some(items_path) = &single.items {
-                    let extractor = JsonPathExtractor::new(items_path)?;
-                    extractor.extract(&result)?
-                } else {
-                    vec![result]
-                };
-
-                Ok(items)
-            }
-            DataSource::Multi(_) => Err(crate::error::TermStackError::DataProvider(
-                "Multi-source not yet implemented".to_string(),
-            )),
-            DataSource::SingleOrStream(crate::config::SingleOrStream::Stream(_)) => {
-                // Stream sources don't use fetch_page_data
-                // They will be handled separately with streaming infrastructure
-                Ok(Vec::new())
-            }
-        }
+        // Delegate to static method (consolidation to avoid duplication)
+        Self::fetch_data_static(page, &self.nav_context, &self.adapter_registry).await
     }
 
     fn create_template_context(&self, current_row: Option<&Value>) -> TemplateContext {
