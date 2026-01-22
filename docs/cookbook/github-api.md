@@ -662,6 +662,5 @@ pages:
 ## See Also
 
 - [Authentication Guide](../guides/authentication.md) - Comprehensive auth documentation
-- [HTTP Adapter Guide](../guides/http-adapter.md) - HTTP configuration details
-- [Template Reference](../guides/templates-and-context.md) - Template syntax and filters
 - [AWS CLI Integration](aws-cli.md) - Similar example for AWS
+- [Documentation Hub](../README.md) - Central documentation index

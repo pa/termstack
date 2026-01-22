@@ -887,8 +887,6 @@ data:
 
 ## See Also
 
-- [HTTP Adapter Guide](http-adapter.md) - Detailed HTTP configuration
-- [CLI Adapter Guide](cli-adapter.md) - Detailed CLI configuration
-- [Templates & Context](templates-and-context.md) - Template syntax and variables
-- [GitHub API Cookbook](../cookbook/github-api.md) - Complete GitHub integration
-- [AWS CLI Cookbook](../cookbook/aws-cli.md) - Complete AWS integration
+- [Documentation Hub](../README.md) - Central documentation index
+- [GitHub API Cookbook](../cookbook/github-api.md) - Complete GitHub integration example
+- [AWS CLI Cookbook](../cookbook/aws-cli.md) - Complete AWS integration example
