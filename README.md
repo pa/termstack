@@ -448,7 +448,7 @@ Big shoutout to these awesome free APIs that made testing TermStack a joy:
 ## Fun Facts
 
 - TermStack was born because someone got tired of writing the same table rendering code for the 47th time
-- The first working prototype was built entirely on coffee and spite
+- The first working prototype was pair-programmed with Claude over many cups of coffee
 - "YAML" stands for "YAML Ain't Markup Language" and we're not sorry about the recursion
 - The `q` key quits because `quit` has too many letters
 - Every bug is a feature waiting to be documented
@@ -507,7 +507,7 @@ MIT License — Do whatever you want, just don't blame us.
 
 **Pramodh Ayyappan** ([@pa](https://github.com/pa))
 
-Built entirely with Claude (AI pair programming) without any prior Rust knowledge. Yes, you read that right - zero Rust experience, just vibes and AI. The future is here, and it writes Rust for you.
+Built in partnership with Claude as a pair programming assistant while learning Rust. A testament to what modern AI-assisted development can achieve when human creativity meets AI capabilities.
 
 ## Acknowledgments
 
