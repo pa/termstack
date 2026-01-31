@@ -42,12 +42,6 @@ Think of it as "k9s for anything" — Kubernetes, REST APIs, dog breeds (yes, re
 
 TermStack includes a Claude Code skill that auto-generates complete YAML configurations from natural language. Stop writing YAML manually and let AI handle the syntax, structure, and best practices.
 
-### See It In Action
-
-[![asciicast](https://asciinema.org/a/777358.svg)](https://asciinema.org/a/777358)
-
-*Watch Claude Code generate a complete TermStack config from a simple prompt*
-
 ### Quick Start
 
 In Claude Code, just run:
