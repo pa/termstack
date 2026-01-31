@@ -815,7 +815,20 @@ All timeout fields support these formats:
 ## Running TermStack
 
 ```bash
-cargo run -- examples/your-config.yaml
+termstack examples/your-config.yaml
+```
+
+**Installation:** If you don't have `termstack` installed, download it with:
+
+```bash
+# macOS Apple Silicon
+curl -L https://github.com/pa/termstack/releases/latest/download/termstack-macos-arm64.tar.gz | tar -xz && chmod +x termstack && sudo mv termstack /usr/local/bin/
+
+# macOS Intel
+curl -L https://github.com/pa/termstack/releases/latest/download/termstack-macos-amd64.tar.gz | tar -xz && chmod +x termstack && sudo mv termstack /usr/local/bin/
+
+# Linux x86_64
+curl -L https://github.com/pa/termstack/releases/latest/download/termstack-linux-amd64.tar.gz | tar -xz && chmod +x termstack && sudo mv termstack /usr/local/bin/
 ```
 
 ## Navigation Keys

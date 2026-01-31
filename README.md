@@ -115,7 +115,30 @@ The skill knows about **all** TermStack features:
 
 ### Installation
 
-**Download pre-built binaries** from the [Releases page](https://github.com/pa/termstack/releases):
+**Option 1: Quick Install with curl (Recommended)**
+
+Download and install the latest release automatically:
+
+```bash
+# macOS Apple Silicon (ARM64)
+curl -L https://github.com/pa/termstack/releases/latest/download/termstack-macos-arm64.tar.gz | tar -xz && chmod +x termstack && sudo mv termstack /usr/local/bin/
+
+# macOS Intel (x86_64)
+curl -L https://github.com/pa/termstack/releases/latest/download/termstack-macos-amd64.tar.gz | tar -xz && chmod +x termstack && sudo mv termstack /usr/local/bin/
+
+# Linux x86_64
+curl -L https://github.com/pa/termstack/releases/latest/download/termstack-linux-amd64.tar.gz | tar -xz && chmod +x termstack && sudo mv termstack /usr/local/bin/
+
+# Linux ARM64
+curl -L https://github.com/pa/termstack/releases/latest/download/termstack-linux-arm64.tar.gz | tar -xz && chmod +x termstack && sudo mv termstack /usr/local/bin/
+
+# Verify installation
+termstack --help
+```
+
+**Option 2: Manual Download**
+
+Download pre-built binaries from the [Releases page](https://github.com/pa/termstack/releases):
 
 | Platform | Architecture | Download |
 |----------|--------------|----------|
@@ -186,7 +209,7 @@ pages:
 Run it:
 
 ```bash
-cargo run -- hello.yaml
+termstack hello.yaml
 ```
 
 Congratulations! You just built a TUI without writing a single line of code. Your CS professor would be so proud (or horrified, either way).
@@ -212,7 +235,7 @@ Options:
 Browse dog breeds like you're on Tinder, but for pets:
 
 ```bash
-cargo run -- examples/dog-api.yaml
+termstack examples/dog-api.yaml
 ```
 
 Uses the amazing [DogAPI](https://dogapi.dog/) — a free, open API with no authentication required. Perfect for demos, testing, or just learning about Corgis at 2 AM.
@@ -222,7 +245,7 @@ Uses the amazing [DogAPI](https://dogapi.dog/) — a free, open API with no auth
 A k9s-style interface for when you need YAML-ception:
 
 ```bash
-cargo run -- examples/kubernetes-cli.yaml
+termstack examples/kubernetes-cli.yaml
 ```
 
 Navigate Namespaces → Pods → Logs → Existential Crisis about your YAML indentation.
@@ -231,10 +254,10 @@ Navigate Namespaces → Pods → Logs → Existential Crisis about your YAML ind
 
 | Example | Description | Command |
 |---------|-------------|---------|
-| `dog-api.yaml` | Browse dog breeds and facts | `cargo run -- examples/dog-api.yaml` |
-| `kubernetes-cli.yaml` | Kubernetes resource browser | `cargo run -- examples/kubernetes-cli.yaml` |
-| `stream-test.yaml` | Streaming logs demo | `cargo run -- examples/stream-test.yaml` |
-| `style-test.yaml` | Styling capabilities | `cargo run -- examples/style-test.yaml` |
+| `dog-api.yaml` | Browse dog breeds and facts | `termstack examples/dog-api.yaml` |
+| `kubernetes-cli.yaml` | Kubernetes resource browser | `termstack examples/kubernetes-cli.yaml` |
+| `stream-test.yaml` | Streaming logs demo | `termstack examples/stream-test.yaml` |
+| `style-test.yaml` | Styling capabilities | `termstack examples/style-test.yaml` |
 
 ## Configuration
 
@@ -477,8 +500,11 @@ cargo test
 # Check (fast compile check)
 cargo check
 
-# Run with example
+# Run with example (development)
 cargo run -- examples/dog-api.yaml
+
+# Or use the installed binary
+termstack examples/dog-api.yaml
 ```
 
 ## Troubleshooting
