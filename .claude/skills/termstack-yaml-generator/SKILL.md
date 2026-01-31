@@ -79,6 +79,10 @@ pages:
 
 ### 1. Data Adapters
 
+**IMPORTANT: Choosing the Right Field**
+- Use `adapter: cli|http|script` for **single-fetch** or **periodic refresh** data sources
+- Use `type: stream` for **real-time streaming** data sources (continuous output)
+
 #### HTTP Adapter
 ```yaml
 data:
@@ -119,21 +123,19 @@ data:
 ```
 
 #### Stream Adapter
-For real-time streaming data (logs, websocket, file tailing):
+For real-time streaming data (logs, command output):
 ```yaml
 data:
-  adapter: stream
-  source: websocket  # or "file", "command"
-  url: "wss://api.example.com/stream"  # For websocket
-  # OR
-  # path: "/var/log/app.log"  # For file tailing
-  # OR
-  # command: "tail"  # For command streaming
-  # args: ["-f", "/var/log/app.log"]
-  buffer_size: 1000  # Max lines to keep in buffer
-  buffer_time: "5s"  # Time window for buffering
-  follow: true  # Auto-scroll to new lines
+  type: stream  # Use "type" (not "adapter") for streaming
+  command: "kubectl"
+  args: ["logs", "-f", "pod-name", "-n", "namespace"]
+  buffer_size: 1000  # Max lines to keep in buffer (default: 100)
+  buffer_time: "5m"  # Time window for buffering (optional)
+  follow: true  # Auto-scroll to new lines (default: true)
+  timeout: "30s"  # Optional timeout
 ```
+
+**Important:** Stream data sources use `type: stream` (not `adapter: stream`). The command output is streamed in real-time to the terminal.
 
 ### 2. View Types
 
@@ -185,24 +187,17 @@ view:
 ```
 
 #### Logs View
-Display streaming logs with filtering:
+Display streaming logs:
 ```yaml
 view:
   type: logs
-  filters:
-    - name: "Errors"
-      pattern: "ERROR|error|Error"
-      color: red
-    - name: "Warnings"
-      pattern: "WARN|warn|Warning"
-      color: yellow
-    - name: "Info"
-      pattern: "INFO|info"
-      color: cyan
-  line_numbers: true
-  wrap: true
-  follow: true  # Auto-scroll to new lines
+  follow: true              # Auto-scroll to new lines (default: true)
+  wrap: true                # Wrap long lines (default: false)
+  show_line_numbers: true   # Show line numbers (default: false)
+  show_timestamps: false    # Show timestamps (default: false)
 ```
+
+**Note:** Log filtering is defined in the schema but not yet fully implemented in the current version. Use the basic logs view shown above.
 
 ### 3. Navigation
 
@@ -317,26 +312,141 @@ view:
       source: stats
 ```
 
-### 6. Context Variables
+### 6. Context Variables and Navigation
 
-When navigating between pages, context is passed via the `context` block:
+**CRITICAL: There are TWO different syntaxes for context depending on navigation type!**
+
+#### A. Next Navigation (Enter key) - Uses JSONPath
 
 ```yaml
-# Source page
+# Source page - next navigation ONLY accepts JSONPath syntax
 next:
   page: detail
   context:
-    user_id: "$.id"        # JSONPath extracts from selected row
-    user_name: "$.name"
+    user_id: "$.id"              # ✅ JSONPath - extracts from selected row
+    user_name: "$.attributes.name"  # ✅ JSONPath
 
-# Target page - access as {{ user_id }} and {{ user_name }}
+# Target page - access as template variables
 detail:
-  title: "User: {{ user_name }}"
+  title: "User: {{ user_name }}"  # Template variable
   data:
     url: "{{ api_base }}/users/{{ user_id }}"
 ```
 
-**IMPORTANT:** Context variables are accessed directly by their key name (e.g., `{{ user_id }}`), NOT by the source page name (e.g., NOT `{{ users.user_id }}`).
+#### B. Action Navigation (a + key) - Uses Templates
+
+```yaml
+# Source page - action context ACCEPTS template expressions
+actions:
+  - key: "d"
+    page: detail
+    context:
+      user_id: "{{ id }}"                    # ✅ Template - from current row
+      user_name: "{{ attributes.name }}"     # ✅ Template
+      combined: "{{ namespace }}/{{ name }}"  # ✅ Template expressions work!
+```
+
+#### C. Variable Scoping and Access
+
+**Variables available in templates ({{ }}):**
+
+1. **Global variables** - From `globals` section
+   ```yaml
+   globals:
+     api_base: "https://api.example.com"
+   # Use: {{ api_base }}
+   ```
+
+2. **Current row fields** - Flattened to top level
+   ```yaml
+   # If row is: {"metadata": {"name": "pod-1"}, "status": "Running"}
+   # Access: {{ metadata.name }} or {{ status }}
+   ```
+
+3. **Previous page data** - Stored by page name
+   ```yaml
+   # After selecting from "namespaces" page, entire row stored as "namespaces"
+   # Access: {{ namespaces.metadata.name }}
+   ```
+
+4. **Context variables** - From navigation context
+   ```yaml
+   # If context passed: pod_name: "$.metadata.name"
+   # Access: {{ pod_name }}
+   ```
+
+5. **Special variables**
+   - `{{ row }}` - The entire current row object
+   - `{{ value }}` - Current value (in transforms/conditions)
+   - `{{ env.VAR_NAME }}` - Environment variables
+
+**Variable Resolution Priority (high to low):**
+1. Current row fields (flattened)
+2. Page contexts (from previous navigations)
+3. Global variables
+4. Environment variables
+
+#### D. Common Patterns
+
+**Pattern 1: Multi-level Navigation**
+```yaml
+# Page 1: namespaces
+next:
+  page: pods
+  context:
+    namespace: "$.metadata.name"  # Extract and store
+
+# Page 2: pods (has access to {{ namespace }})
+title: "Pods in {{ namespace }}"
+data:
+  command: "kubectl"
+  args: ["get", "pods", "-n", "{{ namespace }}"]
+
+# Navigate to logs
+actions:
+  - key: "l"
+    page: pod_logs
+    context:
+      pod_name: "{{ metadata.name }}"      # Template - from current pod
+      namespace: "{{ namespace }}"         # Template - from stored context
+
+# Page 3: pod_logs (has access to both)
+title: "Logs: {{ pod_name }}"
+data:
+  type: stream
+  command: "kubectl"
+  args: ["logs", "-f", "{{ pod_name }}", "-n", "{{ namespace }}"]
+```
+
+**Pattern 2: Accessing Previous Page Data**
+```yaml
+# Entire selected row from "users" page is stored as "users"
+title: "Details - {{ users.attributes.name }}"
+
+# OR use extracted context variable
+title: "Details - {{ user_name }}"
+```
+
+**Pattern 3: Current Row Access**
+```yaml
+# In table view, current row fields are available directly
+columns:
+  - path: "$.status"
+    style:
+      - condition: "{{ status == 'active' }}"  # Access current row's status field
+        color: green
+```
+
+#### E. Key Rules Summary
+
+| Location | Syntax | Example |
+|----------|--------|---------|
+| **next.context values** | JSONPath only | `pod_name: "$.metadata.name"` |
+| **action.context values** | Templates | `pod_name: "{{ metadata.name }}"` |
+| **Page titles** | Templates | `title: "{{ namespace }}"` |
+| **Data commands/URLs** | Templates | `args: ["-n", "{{ namespace }}"]` |
+| **Transforms** | Templates | `transform: "{{ value \| timeago }}"` |
+| **Conditions** | Templates | `condition: "{{ value > 5 }}"` |
 
 ### 7. Styling
 
@@ -590,20 +700,22 @@ pages:
     next:
       page: pod_detail
       context:
-        pod_name: "$.metadata.name"
+        pod_name: "$.metadata.name"       # JSONPath for next navigation
+        pod_namespace: "$.metadata.namespace"
     actions:
       - key: "l"
         name: "View Logs"
         page: "pod_logs"
         context:
-          pod_name: "$.metadata.name"
+          pod_name: "{{ metadata.name }}"  # Templates for action navigation
+          pod_namespace: "{{ metadata.namespace }}"
 
   pod_detail:
     title: "Pod: {{ pod_name }}"
     data:
       adapter: cli
       command: "kubectl"
-      args: ["get", "pod", "{{ pod_name }}", "-n", "{{ namespace }}", "-o", "json"]
+      args: ["get", "pod", "{{ pod_name }}", "-n", "{{ pod_namespace }}", "-o", "json"]
       items: "$.data"
     view:
       type: text
@@ -612,26 +724,16 @@ pages:
   pod_logs:
     title: "Logs: {{ pod_name }}"
     data:
-      adapter: stream
-      source: command
+      type: stream
       command: "kubectl"
-      args: ["logs", "-f", "{{ pod_name }}", "-n", "{{ namespace }}"]
+      args: ["logs", "-f", "{{ pod_name }}", "-n", "{{ pod_namespace }}"]
       buffer_size: 1000
       follow: true
     view:
       type: logs
-      filters:
-        - name: "Errors"
-          pattern: "ERROR|error|Error"
-          color: red
-        - name: "Warnings"
-          pattern: "WARN|warn|Warning"
-          color: yellow
-        - name: "Info"
-          pattern: "INFO|info"
-          color: cyan
-      line_numbers: true
+      follow: true
       wrap: true
+      show_line_numbers: true
 ```
 
 ### Example 3: File Browser with Conditional Navigation
@@ -769,7 +871,7 @@ When generating a TermStack YAML:
 5. **Set up navigation** - Use `next` for Enter key, `actions` for shortcuts
 6. **Add styling** - Color code important fields
 7. **Use correct context** - Pass IDs/names via context, access directly by key name
-8. **Choose the right adapter** - HTTP for APIs, CLI for commands, Script for custom processing, Stream for real-time data
+8. **Choose the right data source type** - Use `adapter: http|cli|script` for single/periodic fetches, `type: stream` for real-time streaming
 9. **Select appropriate view** - Table for lists, Text for details, Logs for streaming
 10. **Add transforms** - Use Tera filters for formatting (timeago, filesizeformat)
 11. **Implement validation** - Add rules for data integrity
@@ -865,3 +967,168 @@ curl -fsSL https://github.com/pa/termstack/releases/latest/download/termstack-li
 8. **Test JSONPath expressions** - Use online tools to verify paths
 9. **Add optional flag to non-critical data sources** - Prevents failures
 10. **Use builtin actions** - Leverage built-in functionality (help, search, refresh)
+
+## Troubleshooting Common Issues
+
+### Issue: "Command exited with status: 1" in Stream
+
+**Cause:** Template variables in stream command are not being resolved correctly.
+
+**Solution:**
+```yaml
+# ❌ WRONG - Using global variable that may not be in scope
+data:
+  type: stream
+  command: "kubectl"
+  args: ["logs", "-f", "{{ pod_name }}", "-n", "{{ namespace }}"]
+
+# ✅ CORRECT - Pass namespace explicitly in context
+actions:
+  - key: "l"
+    page: pod_logs
+    context:
+      pod_name: "{{ metadata.name }}"
+      pod_namespace: "{{ metadata.namespace }}"
+
+# Then in pod_logs page:
+data:
+  type: stream
+  args: ["logs", "-f", "{{ pod_name }}", "-n", "{{ pod_namespace }}"]
+```
+
+### Issue: Variables Not Available in Next Page
+
+**Cause:** Using wrong syntax in context (templates in next.context or JSONPath in action.context).
+
+**Solution:**
+```yaml
+# ❌ WRONG - Template in next.context
+next:
+  context:
+    name: "{{ metadata.name }}"  # Won't work!
+
+# ✅ CORRECT - JSONPath in next.context
+next:
+  context:
+    name: "$.metadata.name"
+
+# ❌ WRONG - JSONPath in action.context
+actions:
+  - key: "d"
+    context:
+      name: "$.metadata.name"  # Won't work!
+
+# ✅ CORRECT - Template in action.context
+actions:
+  - key: "d"
+    context:
+      name: "{{ metadata.name }}"
+```
+
+### Issue: Can't Access Previous Page Data
+
+**Cause:** Not understanding how page data is stored.
+
+**Solution:**
+```yaml
+# After navigating from "namespaces" page, entire selected row is stored
+# Access it using the page name as prefix:
+title: "Pods in {{ namespaces.metadata.name }}"
+
+# OR extract specific fields in context:
+# In namespaces page:
+next:
+  page: pods
+  context:
+    namespace: "$.metadata.name"  # Extract and store
+
+# In pods page:
+title: "Pods in {{ namespace }}"  # Use extracted value
+```
+
+### Issue: Template Variables Empty/Undefined
+
+**Cause:** Variable not in scope or wrong variable name.
+
+**Debug steps:**
+1. Check if variable is passed in context
+2. Verify context syntax matches navigation type (next vs action)
+3. Use page name prefix for previous page data: `{{ pagename.field }}`
+4. Check variable resolution priority (current row > page contexts > globals)
+
+**Example:**
+```yaml
+# If you're getting empty {{ pod_name }}:
+
+# Check 1: Was it passed in context?
+actions:
+  - key: "l"
+    context:
+      pod_name: "{{ metadata.name }}"  # ✅ Passed
+
+# Check 2: Is it being used in the right page?
+pod_logs:
+  title: "{{ pod_name }}"  # ✅ Should work if context passed
+
+# Check 3: Try using source page prefix
+pod_logs:
+  title: "{{ pods.metadata.name }}"  # Alternative if context not working
+```
+
+### Issue: JSONPath Not Extracting Data
+
+**Cause:** Wrong JSONPath expression or data structure.
+
+**Solution:**
+```yaml
+# Test your JSONPath on actual data first
+# If data is: {"metadata": {"name": "my-pod"}}
+
+# ✅ CORRECT
+context:
+  name: "$.metadata.name"  # Extracts "my-pod"
+
+# ❌ WRONG
+context:
+  name: "$.name"  # Won't find it (name is nested)
+  name: "metadata.name"  # Missing $ prefix
+```
+
+### Best Practices for Context
+
+1. **Always pass namespace with pod data:**
+   ```yaml
+   context:
+     pod_name: "{{ metadata.name }}"
+     pod_namespace: "{{ metadata.namespace }}"
+   ```
+
+2. **Use consistent variable names across pages:**
+   ```yaml
+   # Good pattern:
+   namespaces → namespace
+   pods → pod_name, pod_namespace
+   deployments → deployment_name
+   ```
+
+3. **Extract data early in navigation chain:**
+   ```yaml
+   # In first page, extract what you'll need later
+   next:
+     context:
+       namespace: "$.metadata.name"
+       cluster: "$.metadata.clusterName"
+   ```
+
+4. **Use descriptive context keys:**
+   ```yaml
+   # ✅ GOOD
+   context:
+     pod_name: "{{ metadata.name }}"
+     pod_namespace: "{{ metadata.namespace }}"
+   
+   # ❌ BAD
+   context:
+     name: "{{ metadata.name }}"  # Too generic
+     ns: "{{ metadata.namespace }}"  # Unclear abbreviation
+   ```
