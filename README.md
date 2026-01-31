@@ -121,16 +121,28 @@ Download and install the latest release automatically:
 
 ```bash
 # macOS Apple Silicon (ARM64)
-curl -L https://github.com/pa/termstack/releases/latest/download/termstack-macos-arm64.tar.gz | tar -xz && chmod +x termstack && sudo mv termstack /usr/local/bin/
+curl -fsSL https://github.com/pa/termstack/releases/latest/download/termstack-macos-arm64.tar.gz \
+  | tar -xz \
+  && chmod +x termstack \
+  && sudo mv termstack /usr/local/bin/termstack
 
 # macOS Intel (x86_64)
-curl -L https://github.com/pa/termstack/releases/latest/download/termstack-macos-amd64.tar.gz | tar -xz && chmod +x termstack && sudo mv termstack /usr/local/bin/
+curl -fsSL https://github.com/pa/termstack/releases/latest/download/termstack-macos-amd64.tar.gz \
+  | tar -xz \
+  && chmod +x termstack \
+  && sudo mv termstack /usr/local/bin/termstack
 
 # Linux x86_64
-curl -L https://github.com/pa/termstack/releases/latest/download/termstack-linux-amd64.tar.gz | tar -xz && chmod +x termstack && sudo mv termstack /usr/local/bin/
+curl -fsSL https://github.com/pa/termstack/releases/latest/download/termstack-linux-amd64.tar.gz \
+  | tar -xz \
+  && chmod +x termstack \
+  && sudo mv termstack /usr/local/bin/termstack
 
 # Linux ARM64
-curl -L https://github.com/pa/termstack/releases/latest/download/termstack-linux-arm64.tar.gz | tar -xz && chmod +x termstack && sudo mv termstack /usr/local/bin/
+curl -fsSL https://github.com/pa/termstack/releases/latest/download/termstack-linux-arm64.tar.gz \
+  | tar -xz \
+  && chmod +x termstack \
+  && sudo mv termstack /usr/local/bin/termstack
 
 # Verify installation
 termstack --help
