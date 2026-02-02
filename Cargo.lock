@@ -2270,7 +2270,7 @@ dependencies = [
  "serde_json_path",
  "serde_yaml",
  "tera",
- "thiserror 1.0.69",
+ "thiserror 2.0.17",
  "tokio",
  "tui-input",
  "tui-syntax-highlight",
