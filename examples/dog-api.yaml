@@ -100,11 +100,11 @@ pages:
         breed_id: "$.id"
         breed_name: "$.attributes.name"
     actions:
-      - key: "f"
+      - key: "ctrl+f"
         name: "View Facts"
         description: "View random dog facts"
         page: "facts"
-      - key: "g"
+      - key: "ctrl+g"
         name: "View Groups"
         description: "View breed groups"
         page: "groups"
@@ -182,11 +182,11 @@ pages:
             - default: true
               color: gray
     actions:
-      - key: "f"
+      - key: "ctrl+f"
         name: "View Facts"
         description: "View random dog facts"
         page: "facts"
-      - key: "y"
+      - key: "ctrl+y"
         name: "View as YAML"
         description: "View full JSON response"
         page: "breed_yaml"

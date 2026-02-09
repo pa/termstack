@@ -1,4 +1,4 @@
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{
     DefaultTerminal, Frame,
     layout::{Constraint, Layout, Rect},
@@ -13,7 +13,7 @@ use tokio::sync::mpsc;
 
 use crate::{
     action::executor::{ActionExecutor, ActionResult},
-    config::{Config, View as ConfigView},
+    config::{Config, View as ConfigView, TableColumn},
     data::{JsonPathExtractor, StreamMessage},
     error::Result,
     globals,
@@ -23,7 +23,25 @@ use crate::{
 use regex::Regex;
 
 /// Global search state that works across all views
-#[derive(Debug, Clone, Default)]
+/// Search mode for global search
+#[derive(Debug, Clone, PartialEq)]
+enum SearchMode {
+    /// Search across all columns
+    Global,
+    /// Search within a specific column
+    ColumnSpecific {
+        column_display_name: String,  // User-friendly name from "display" field
+        column_path: String,          // JSONPath from "path" field
+        search_term: String,
+    },
+}
+
+impl Default for SearchMode {
+    fn default() -> Self {
+        SearchMode::Global
+    }
+}
+
 struct GlobalSearch {
     /// Whether search input is active
     active: bool,
@@ -35,6 +53,21 @@ struct GlobalSearch {
     regex_pattern: Option<Regex>,
     /// Whether to use case-sensitive search
     case_sensitive: bool,
+    /// Current search mode (global or column-specific)
+    mode: SearchMode,
+}
+
+impl Default for GlobalSearch {
+    fn default() -> Self {
+        GlobalSearch {
+            active: false,
+            query: String::new(),
+            filter_active: false,
+            regex_pattern: None,
+            case_sensitive: false,
+            mode: SearchMode::Global,
+        }
+    }
 }
 
 impl GlobalSearch {
@@ -105,6 +138,7 @@ impl GlobalSearch {
         self.query.clear();
         self.filter_active = false;
         self.regex_pattern = None;
+        self.mode = SearchMode::Global;
     }
 
     /// Clear the search filter
@@ -112,6 +146,8 @@ impl GlobalSearch {
         self.query.clear();
         self.filter_active = false;
         self.regex_pattern = None;
+        self.active = false; // Close search input when clearing
+        self.mode = SearchMode::Global; // Reset to global search
     }
 
     /// Add character to query
@@ -130,6 +166,38 @@ impl GlobalSearch {
         if self.filter_active {
             self.compile_pattern();
         }
+    }
+
+    /// Parse query to determine if it's column-specific or global.
+    /// Uses `%column_name%` delimiter syntax for unambiguous multi-word column names.
+    /// E.g. `%Project Type% active` matches column "Project Type" with term "active".
+    fn parse_mode(&self, table_columns: &[TableColumn]) -> SearchMode {
+        // Check for %column_name% pattern
+        if self.query.starts_with('%') {
+            if let Some(end_pct) = self.query[1..].find('%') {
+                let column_name = self.query[1..1 + end_pct].trim();
+                let after_delim = &self.query[2 + end_pct..];
+
+                // Must have a space then search term after closing %
+                if after_delim.starts_with(' ') {
+                    let search_term = after_delim[1..].trim();
+                    if !search_term.is_empty() {
+                        if let Some(col) = table_columns.iter()
+                            .find(|c| c.display.eq_ignore_ascii_case(column_name))
+                        {
+                            return SearchMode::ColumnSpecific {
+                                column_display_name: col.display.clone(),
+                                column_path: col.path.clone(),
+                                search_term: search_term.to_string(),
+                            };
+                        }
+                    }
+                }
+            }
+        }
+
+        // Default to global search
+        SearchMode::Global
     }
 }
 
@@ -178,8 +246,15 @@ pub struct App {
     logs_wrap: bool,
     logs_horizontal_scroll: usize,
 
-    // Action mode (prefix key pattern)
-    action_mode: bool,
+    // Background action execution
+    action_executing: bool,
+    action_executing_name: String,
+    pending_action_info: Option<PendingActionInfo>,
+    action_result_receiver: Option<mpsc::Receiver<ActionResultMsg>>,
+
+    // Action menu (Shift+A to open, navigate with j/k, execute with Enter)
+    show_action_menu: bool,
+    action_menu_selected: usize,
 
     // UI state
     needs_clear: bool,
@@ -202,6 +277,7 @@ enum RefreshMessage {
 struct ActionConfirm {
     action: crate::config::schema::Action,
     message: String,
+    executing: bool,
 }
 
 #[derive(Clone)]
@@ -227,6 +303,17 @@ enum StreamStatus {
     Streaming,
     Stopped,
     Error(String),
+}
+
+/// Info captured at action trigger time for processing results later
+struct PendingActionInfo {
+    action: crate::config::schema::Action,
+    template_ctx: TemplateContext,
+}
+
+/// Message sent from background action task to main event loop
+enum ActionResultMsg {
+    Completed(std::result::Result<ActionResult, String>),
 }
 
 impl App {
@@ -268,7 +355,12 @@ impl App {
             logs_follow: true,
             logs_wrap: true,
             logs_horizontal_scroll: 0,
-            action_mode: false,
+            action_executing: false,
+            action_executing_name: String::new(),
+            pending_action_info: None,
+            action_result_receiver: None,
+            show_action_menu: false,
+            action_menu_selected: 0,
             needs_clear: false,
             needs_render: true, // Initial render needed
             refresh_receiver: None,
@@ -285,34 +377,55 @@ impl App {
         self.spinner_frame = 0;
         self.needs_render = true;
 
-        // Create channel for initial load (using Option for simplicity)
+        // Check if start page is a stream data source
+        let is_stream = globals::config()
+            .pages
+            .get(&self.current_page)
+            .map(|p| {
+                matches!(
+                    &p.data,
+                    crate::config::DataSource::SingleOrStream(
+                        crate::config::SingleOrStream::Stream(_)
+                    )
+                )
+            })
+            .unwrap_or(false);
+
+        // Create channel for initial load — always created so initial_rx exists in the event loop.
+        // For stream pages, the sender is dropped immediately so try_recv() returns a harmless error.
         let (initial_tx, mut initial_rx) =
             tokio::sync::mpsc::channel::<(Option<Vec<Value>>, Option<String>)>(1);
-        let current_page = self.current_page.clone();
-        let nav_context = self.nav_context.clone();
-        let adapter_registry = self.adapter_registry.clone();
 
-        // Spawn initial load as background task
-        tokio::spawn(async move {
-            let page = match globals::config().pages.get(&current_page).cloned() {
-                Some(p) => p,
-                None => {
-                    let _ = initial_tx
-                        .send((None, Some(format!("Page not found: {}", current_page))))
-                        .await;
-                    return;
-                }
-            };
+        if is_stream {
+            // Stream pages need direct async loading (start_stream needs &mut self)
+            self.load_current_page().await;
+        } else {
+            // Non-stream: spawn background task for animated spinner
+            let current_page = self.current_page.clone();
+            let nav_context = self.nav_context.clone();
+            let adapter_registry = self.adapter_registry.clone();
 
-            match Self::fetch_data_static(&page, &nav_context, &adapter_registry).await {
-                Ok(data) => {
-                    let _ = initial_tx.send((Some(data), None)).await;
+            tokio::spawn(async move {
+                let page = match globals::config().pages.get(&current_page).cloned() {
+                    Some(p) => p,
+                    None => {
+                        let _ = initial_tx
+                            .send((None, Some(format!("Page not found: {}", current_page))))
+                            .await;
+                        return;
+                    }
+                };
+
+                match Self::fetch_data_static(&page, &nav_context, &adapter_registry).await {
+                    Ok(data) => {
+                        let _ = initial_tx.send((Some(data), None)).await;
+                    }
+                    Err(e) => {
+                        let _ = initial_tx.send((None, Some(e.to_string()))).await;
+                    }
                 }
-                Err(e) => {
-                    let _ = initial_tx.send((None, Some(e.to_string()))).await;
-                }
-            }
-        });
+            });
+        }
 
         while self.running {
             if self.needs_clear {
@@ -350,6 +463,19 @@ impl App {
             // Check for stream updates
             self.check_stream_updates();
 
+            // Check for background action completion
+            if let Some(action_result) = self.check_action_result() {
+                match action_result {
+                    ActionResult::Navigate(page, context_map) => {
+                        self.navigate_to_page(&page, context_map).await;
+                    }
+                    ActionResult::Refresh => {
+                        self.load_current_page_background();
+                    }
+                    _ => {}
+                }
+            }
+
             // Auto-dismiss notifications after 3 seconds
             if let Some(msg) = &self.action_message
                 && msg.timestamp.elapsed() > std::time::Duration::from_secs(3)
@@ -358,8 +484,8 @@ impl App {
                 self.needs_render = true;
             }
 
-            // Advance spinner animation if loading
-            if self.loading || self.is_refreshing {
+            // Advance spinner animation if loading or executing action
+            if self.loading || self.is_refreshing || self.action_executing {
                 self.advance_spinner();
                 self.needs_render = true;
             }
@@ -798,11 +924,19 @@ impl App {
     async fn handle_key(&mut self, key: KeyEvent) {
         // Handle action confirmation dialog
         if let Some(confirm) = &self.action_confirm {
+            if confirm.executing {
+                // Block all input while action is executing
+                return;
+            }
             match key.code {
                 KeyCode::Char('y') | KeyCode::Char('Y') => {
                     let action = confirm.action.clone();
-                    self.action_confirm = None;
+                    // Keep dialog open but mark as executing
+                    if let Some(confirm) = &mut self.action_confirm {
+                        confirm.executing = true;
+                    }
                     self.execute_action(&action).await;
+                    self.needs_render = true;
                 }
                 KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
                     self.action_confirm = None;
@@ -843,11 +977,13 @@ impl App {
                 }
                 KeyCode::Char(c) => {
                     self.global_search.push_char(c);
+                    self.update_search_mode();
                     self.needs_render = true;
                     return;
                 }
                 KeyCode::Backspace => {
                     self.global_search.pop_char();
+                    self.update_search_mode();
                     self.needs_render = true;
                     return;
                 }
@@ -890,6 +1026,14 @@ impl App {
             self.action_message = None;
         }
 
+        // Handle Ctrl+key combinations for direct action execution
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            if let KeyCode::Char(c) = key.code {
+                self.handle_ctrl_action(c).await;
+                return;
+            }
+        }
+
         // Normal key handling
         match key.code {
             KeyCode::Char('q') => {
@@ -898,9 +1042,9 @@ impl App {
                 self.needs_render = true;
             }
             KeyCode::Esc => {
-                // If in action mode, exit action mode first
-                if self.action_mode {
-                    self.action_mode = false;
+                // If action menu is open, close it first
+                if self.show_action_menu {
+                    self.show_action_menu = false;
                     self.needs_render = true;
                 }
                 // If search filter is active, clear it first
@@ -916,20 +1060,57 @@ impl App {
                     self.go_back().await;
                 }
             }
-            KeyCode::Char('j') | KeyCode::Down => self.move_down(),
-            KeyCode::Char('k') | KeyCode::Up => self.move_up(),
-            KeyCode::Char('g') => {
-                if self.action_mode {
-                    self.action_mode = false;
-                    self.handle_action_key('g').await;
+            KeyCode::Char('j') | KeyCode::Down => {
+                if self.show_action_menu {
+                    // Navigate action menu down
+                    let page = match globals::config().pages.get(&self.current_page) {
+                        Some(p) => p,
+                        None => return,
+                    };
+                    if let Some(actions) = &page.actions {
+                        if !actions.is_empty() {
+                            self.action_menu_selected = (self.action_menu_selected + 1) % actions.len();
+                            self.needs_render = true;
+                        }
+                    }
                 } else {
-                    self.move_top();
+                    self.move_down();
                 }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if self.show_action_menu {
+                    // Navigate action menu up
+                    let page = match globals::config().pages.get(&self.current_page) {
+                        Some(p) => p,
+                        None => return,
+                    };
+                    if let Some(actions) = &page.actions {
+                        if !actions.is_empty() {
+                            if self.action_menu_selected == 0 {
+                                self.action_menu_selected = actions.len() - 1;
+                            } else {
+                                self.action_menu_selected -= 1;
+                            }
+                            self.needs_render = true;
+                        }
+                    }
+                } else {
+                    self.move_up();
+                }
+            }
+            KeyCode::Char('g') => {
+                self.move_top();
             }
             KeyCode::Char('G') => self.move_bottom(),
             KeyCode::Char('r') => {
-                // Manual refresh - use background loading for animated spinner
-                self.load_current_page_background();
+                if self.stream_active {
+                    // Restart the stream
+                    self.stop_stream();
+                    self.load_current_page().await;
+                } else {
+                    // Manual refresh - use background loading for animated spinner
+                    self.load_current_page_background();
+                }
             }
             KeyCode::Char('/') => {
                 // Activate global search
@@ -937,11 +1118,6 @@ impl App {
                 self.needs_render = true;
             }
             KeyCode::Char('f') => {
-                if self.action_mode {
-                    self.action_mode = false;
-                    self.handle_action_key('f').await;
-                    return;
-                }
                 // Toggle follow in logs view (when paused, 'f' resumes LIVE mode)
                 if self.stream_active {
                     if self.stream_paused {
@@ -993,79 +1169,123 @@ impl App {
                 }
             }
             KeyCode::Char('h') => {
-                // In action mode: treat as action key
-                if self.action_mode {
-                    self.action_mode = false;
-                    self.handle_action_key('h').await;
-                } else if self.stream_active && !self.logs_wrap {
-                    // Normal mode: horizontal scroll left in logs view
+                if self.stream_active && !self.logs_wrap {
+                    // Horizontal scroll left in logs view
                     self.logs_horizontal_scroll = self.logs_horizontal_scroll.saturating_sub(5);
                     // Always render user actions, even when paused
                     self.needs_render = true;
                 }
             }
             KeyCode::Char('l') => {
-                // In action mode: treat as action key
-                if self.action_mode {
-                    self.action_mode = false;
-                    self.handle_action_key('l').await;
-                } else if self.stream_active && !self.logs_wrap {
-                    // Normal mode: horizontal scroll right in logs view
+                if self.stream_active && !self.logs_wrap {
+                    // Horizontal scroll right in logs view
                     self.logs_horizontal_scroll = self.logs_horizontal_scroll.saturating_add(5);
                     // Always render user actions, even when paused
                     self.needs_render = true;
                 }
             }
             KeyCode::Enter => {
-                // In action mode: treat as action key
-                if self.action_mode {
-                    self.action_mode = false;
-                    self.handle_action_key('\n').await;
+                if self.show_action_menu {
+                    // Execute selected action from menu
+                    let action_to_execute = {
+                        let page = match globals::config().pages.get(&self.current_page) {
+                            Some(p) => p,
+                            None => return,
+                        };
+                        page.actions.as_ref().and_then(|actions| {
+                            if self.action_menu_selected < actions.len() {
+                                Some(actions[self.action_menu_selected].clone())
+                            } else {
+                                None
+                            }
+                        })
+                    };
+
+                    if let Some(action) = action_to_execute {
+                        self.show_action_menu = false;
+                        self.needs_render = true;
+                        // Check if confirmation is needed
+                        if let Some(confirm_msg) = &action.confirm {
+                            let rendered_msg = globals::template_engine()
+                                .render_string(
+                                    confirm_msg,
+                                    &self.create_template_context(self.get_selected_row()),
+                                )
+                                .unwrap_or_else(|_| confirm_msg.clone());
+                            self.action_confirm = Some(ActionConfirm {
+                                action: action.clone(),
+                                message: rendered_msg,
+                                executing: false,
+                            });
+                        } else {
+                            self.execute_action(&action).await;
+                        }
+                    }
                 } else {
                     // Normal mode: navigate to next page
                     self.navigate_next().await;
                 }
             }
-            KeyCode::Char('a') => {
-                // Enter action mode (never conflicts because 'a' is the action mode trigger)
-                if !self.action_mode {
-                    self.action_mode = true;
+            KeyCode::Char('A') => {
+                // Shift+A: Toggle action menu (lazygit-style)
+                let page = globals::config().pages.get(&self.current_page);
+                let has_actions = page
+                    .and_then(|p| p.actions.as_ref())
+                    .map(|a| !a.is_empty())
+                    .unwrap_or(false);
+                if has_actions {
+                    self.show_action_menu = !self.show_action_menu;
+                    if self.show_action_menu {
+                        self.action_menu_selected = 0; // Reset selection when opening
+                    }
                     self.needs_render = true;
                 }
             }
-            KeyCode::Char(c) => {
-                // In action mode: ANY character is an action key
-                if self.action_mode {
-                    self.action_mode = false;
-                    self.handle_action_key(c).await;
-                }
-                // Normal mode: ignore unmapped keys (no conflict)
+            KeyCode::Char(_) => {
+                // Ignore unmapped keys
             }
             _ => {}
         }
     }
 
-    async fn handle_action_key(&mut self, key: char) {
-        // Find matching action and clone it to avoid borrow issues
+    async fn handle_ctrl_action(&mut self, key_char: char) {
+
+        // Find matching action by Ctrl+key or fallback to simple key for backward compatibility
         let action_to_execute = {
             let page = match globals::config().pages.get(&self.current_page) {
                 Some(p) => p,
                 None => return,
             };
 
-            let actions = match &page.actions {
-                Some(a) => a,
-                None => return,
-            };
-
-            // Find action with matching key
-            actions
-                .iter()
-                .find(|action| action.key == key.to_string())
-                .cloned()
+            // Look for action with matching Ctrl+key first, then try simple key
+            page.actions
+                .as_ref()
+                .and_then(|actions| {
+                    actions
+                        .iter()
+                        .find(|action| {
+                            if let Ok(parsed_key) = action.parse_key() {
+                                // Try to match with a Ctrl key event
+                                let ctrl_event = KeyEvent::new(
+                                    KeyCode::Char(key_char),
+                                    KeyModifiers::CONTROL
+                                );
+                                parsed_key.matches(&ctrl_event)
+                            } else {
+                                false
+                            }
+                        })
+                        .cloned()
+                })
         };
 
         if let Some(action) = action_to_execute {
+            // Close action menu if it's open
+            if self.show_action_menu {
+                self.show_action_menu = false;
+                self.needs_render = true;
+            }
+
             // Check if confirmation is needed
             if let Some(confirm_msg) = &action.confirm {
                 // Render confirmation message with context
@@ -1079,6 +1299,7 @@ impl App {
                 self.action_confirm = Some(ActionConfirm {
                     action: action.clone(),
                     message: rendered_msg,
+                    executing: false,
                 });
             } else {
                 // Execute immediately
@@ -1138,21 +1359,136 @@ impl App {
     }
 
     async fn execute_action(&mut self, action: &crate::config::schema::Action) {
-        // Create template context for rendering custom messages
+        // Block concurrent actions
+        if self.action_executing {
+            return;
+        }
+
+        // Page navigation is instant — handle inline (no I/O)
+        if let Some(page) = &action.page
+            && !page.is_empty()
+        {
+            let page = page.clone();
+            let context_map = action.context.clone();
+            self.navigate_to_page(&page, context_map).await;
+            return;
+        }
+
+        // Capture template context and context map NOW (before user scrolls away)
         let selected_row = self.get_selected_row();
         let template_ctx = self.create_template_context(selected_row);
-
-        // Create context map for action executor
         let context = self.create_template_context_map();
 
-        // Execute action
-        match self.action_executor.execute(action, &context).await {
-            Ok(ActionResult::Success(_msg)) => {
+        // Set up background execution state
+        self.action_executing = true;
+        self.action_executing_name = action.name.clone();
+        self.spinner_frame = 0;
+        self.needs_render = true;
+
+        // Store pending info for result handling
+        self.pending_action_info = Some(PendingActionInfo {
+            action: action.clone(),
+            template_ctx,
+        });
+
+        // Create channel for result
+        let (tx, rx) = mpsc::channel(1);
+        self.action_result_receiver = Some(rx);
+
+        // Clone what we need for the spawned task
+        let executor = self.action_executor.clone();
+        let action_owned = action.clone();
+
+        // Spawn background task
+        tokio::spawn(async move {
+            let result = executor.execute(&action_owned, &context).await;
+            let msg = match result {
+                Ok(action_result) => ActionResultMsg::Completed(Ok(action_result)),
+                Err(e) => ActionResultMsg::Completed(Err(e.to_string())),
+            };
+            let _ = tx.send(msg).await;
+        });
+    }
+
+    /// Process results from background action execution (called every event loop iteration)
+    fn check_action_result(&mut self) -> Option<ActionResult> {
+        let msg = {
+            let receiver = self.action_result_receiver.as_mut()?;
+            match receiver.try_recv() {
+                Ok(msg) => msg,
+                Err(_) => return None,
+            }
+        };
+
+        // Clear execution state
+        self.action_executing = false;
+        self.action_executing_name.clear();
+        self.action_result_receiver = None;
+        self.action_confirm = None; // Dismiss confirm dialog if it was showing executing state
+
+        let pending = self.pending_action_info.take();
+
+        match msg {
+            ActionResultMsg::Completed(Ok(action_result)) => {
+                if let Some(info) = &pending {
+                    self.process_action_result(&action_result, &info.action, &info.template_ctx);
+                }
+                // Return Navigate/Refresh for async handling in event loop
+                match action_result {
+                    ActionResult::Navigate(..) | ActionResult::Refresh => Some(action_result),
+                    _ => None,
+                }
+            }
+            ActionResultMsg::Completed(Err(e)) => {
+                if let Some(info) = &pending {
+                    let message = if let Some(notification) = &info.action.notification {
+                        if let Some(custom_msg) = &notification.on_failure {
+                            globals::template_engine()
+                                .render_string(custom_msg, &info.template_ctx)
+                                .unwrap_or_else(|_| format!("Action failed: {}", e))
+                        } else {
+                            format!("Action failed: {}", e)
+                        }
+                    } else if let Some(error_msg) = &info.action.error_message {
+                        globals::template_engine()
+                            .render_string(error_msg, &info.template_ctx)
+                            .unwrap_or_else(|_| format!("Action failed: {}", e))
+                    } else {
+                        format!("Action failed: {}", e)
+                    };
+
+                    self.action_message = Some(ActionMessage {
+                        message,
+                        message_type: MessageType::Error,
+                        timestamp: std::time::Instant::now(),
+                    });
+                } else {
+                    self.action_message = Some(ActionMessage {
+                        message: format!("Action failed: {}", e),
+                        message_type: MessageType::Error,
+                        timestamp: std::time::Instant::now(),
+                    });
+                }
+                self.needs_render = true;
+                None
+            }
+        }
+    }
+
+    /// Process a successful action result, setting notifications as appropriate
+    fn process_action_result(
+        &mut self,
+        result: &ActionResult,
+        action: &crate::config::schema::Action,
+        template_ctx: &TemplateContext,
+    ) {
+        match result {
+            ActionResult::Success(_) => {
                 // Only show notification if explicitly configured
                 if let Some(notification) = &action.notification {
                     if let Some(custom_msg) = &notification.on_success {
                         let message = globals::template_engine()
-                            .render_string(custom_msg, &template_ctx)
+                            .render_string(custom_msg, template_ctx)
                             .unwrap_or_else(|_| custom_msg.clone());
 
                         self.action_message = Some(ActionMessage {
@@ -1163,9 +1499,8 @@ impl App {
                         self.needs_render = true;
                     }
                 } else if let Some(success_msg) = &action.success_message {
-                    // Legacy support for success_message
                     let message = globals::template_engine()
-                        .render_string(success_msg, &template_ctx)
+                        .render_string(success_msg, template_ctx)
                         .unwrap_or_else(|_| success_msg.clone());
 
                     self.action_message = Some(ActionMessage {
@@ -1175,24 +1510,22 @@ impl App {
                     });
                     self.needs_render = true;
                 }
-                // If neither notification nor success_message is set, execute silently
             }
-            Ok(ActionResult::Error(msg)) => {
-                // Always show errors, but use custom message if configured
+            ActionResult::Error(msg) => {
                 let message = if let Some(notification) = &action.notification {
                     if let Some(custom_msg) = &notification.on_failure {
                         globals::template_engine()
-                            .render_string(custom_msg, &template_ctx)
+                            .render_string(custom_msg, template_ctx)
                             .unwrap_or_else(|_| custom_msg.clone())
                     } else {
-                        msg
+                        msg.clone()
                     }
                 } else if let Some(error_msg) = &action.error_message {
                     globals::template_engine()
-                        .render_string(error_msg, &template_ctx)
+                        .render_string(error_msg, template_ctx)
                         .unwrap_or_else(|_| error_msg.clone())
                 } else {
-                    msg
+                    msg.clone()
                 };
 
                 self.action_message = Some(ActionMessage {
@@ -1202,12 +1535,12 @@ impl App {
                 });
                 self.needs_render = true;
             }
-            Ok(ActionResult::Refresh) => {
-                // Show success notification if configured, then reload
+            ActionResult::Refresh => {
+                // Show success notification if configured (reload handled by caller)
                 if let Some(notification) = &action.notification {
                     if let Some(custom_msg) = &notification.on_success {
                         let message = globals::template_engine()
-                            .render_string(custom_msg, &template_ctx)
+                            .render_string(custom_msg, template_ctx)
                             .unwrap_or_else(|_| custom_msg.clone());
 
                         self.action_message = Some(ActionMessage {
@@ -1218,9 +1551,8 @@ impl App {
                         self.needs_render = true;
                     }
                 } else if let Some(success_msg) = &action.success_message {
-                    // Legacy support for success_message
                     let message = globals::template_engine()
-                        .render_string(success_msg, &template_ctx)
+                        .render_string(success_msg, template_ctx)
                         .unwrap_or_else(|_| success_msg.clone());
 
                     self.action_message = Some(ActionMessage {
@@ -1230,38 +1562,9 @@ impl App {
                     });
                     self.needs_render = true;
                 }
-
-                // Reload the page
-                self.load_current_page().await;
             }
-            Ok(ActionResult::Navigate(page, context_map)) => {
-                // Navigate to the specified page with context
-                self.navigate_to_page(&page, context_map).await;
-            }
-            Err(e) => {
-                // Use custom error notification message if available for executor errors
-                let message = if let Some(notification) = &action.notification {
-                    if let Some(custom_msg) = &notification.on_failure {
-                        globals::template_engine()
-                            .render_string(custom_msg, &template_ctx)
-                            .unwrap_or_else(|_| format!("Action failed: {}", e))
-                    } else {
-                        format!("Action failed: {}", e)
-                    }
-                } else if let Some(error_msg) = &action.error_message {
-                    globals::template_engine()
-                        .render_string(error_msg, &template_ctx)
-                        .unwrap_or_else(|_| format!("Action failed: {}", e))
-                } else {
-                    format!("Action failed: {}", e)
-                };
-
-                self.action_message = Some(ActionMessage {
-                    message,
-                    message_type: MessageType::Error,
-                    timestamp: std::time::Instant::now(),
-                });
-                self.needs_render = true;
+            ActionResult::Navigate(..) => {
+                // Navigation handled by caller
             }
         }
     }
@@ -1314,6 +1617,9 @@ impl App {
         if let Some(row) = selected_row {
             self.nav_context.set_page_context(source_page_id, row);
         }
+
+        // Clear search when navigating to new page via action
+        self.global_search.clear();
 
         // Navigate to new page
         self.current_page = target_page.to_string();
@@ -1587,6 +1893,16 @@ impl App {
             self.render_action_message(frame, area, msg);
         }
 
+        // Render action executing spinner overlay (only when no confirm dialog is showing it)
+        if self.action_executing && self.action_confirm.is_none() {
+            self.render_action_executing(frame, area);
+        }
+
+        // Render action menu on top if active
+        if self.show_action_menu {
+            self.render_action_menu(frame, area);
+        }
+
         // Render action confirmation dialog on top if active
         if let Some(confirm) = &self.action_confirm {
             self.render_action_confirm(frame, area, confirm);
@@ -1709,15 +2025,27 @@ impl App {
             ""
         };
 
-        let mode_indicator = if self.global_search.query.starts_with('!') {
-            " (Regex)"
-        } else {
-            " (Literal)"
+        // Show column-specific or global search mode
+        let scope_indicator = match &self.global_search.mode {
+            SearchMode::Global => {
+                if self.global_search.query.starts_with('!') {
+                    " (All columns, Regex)".to_string()
+                } else {
+                    " (All columns)".to_string()
+                }
+            }
+            SearchMode::ColumnSpecific { column_display_name, search_term, .. } => {
+                if search_term.starts_with('!') {
+                    format!(" (Column: {}, Regex)", column_display_name)
+                } else {
+                    format!(" (Column: {})", column_display_name)
+                }
+            }
         };
 
         let title = format!(
             "Search{}{} - Enter to apply, Esc to cancel",
-            mode_indicator, case_indicator
+            scope_indicator, case_indicator
         );
 
         let search_input = Paragraph::new(search_text)
@@ -2517,7 +2845,7 @@ impl App {
         } else if self.current_data.is_empty() {
             "q/ESC: Quit  |  r: Refresh"
         } else {
-            "j/k: Move  |  g/G: Top/Bottom  |  Enter: Select  |  ESC: Back  |  r: Refresh  |  q: Quit"
+            "j/k: Move  |  g/G: Top/Bottom  |  Enter: Select  |  /: Search (%col% term)  |  ESC: Back  |  r: Refresh  |  q: Quit"
         };
 
         let row_info = if self.stream_active {
@@ -2565,66 +2893,19 @@ impl App {
             Span::styled(nav_shortcuts, Style::default().fg(Color::White)),
         ]);
 
-        // Build action shortcuts (if available)
-        let action_line = if self.action_mode {
-            // In action mode: show available actions
-            if let Some(page) = globals::config().pages.get(&self.current_page) {
-                if let Some(actions) = &page.actions {
-                    if !actions.is_empty() {
-                        let action_shortcuts: Vec<Span> = actions
-                            .iter()
-                            .flat_map(|a| {
-                                vec![
-                                    Span::styled(
-                                        a.key.to_string(),
-                                        Style::default()
-                                            .fg(Color::Yellow)
-                                            .add_modifier(Modifier::BOLD),
-                                    ),
-                                    Span::raw(format!(": {}  ", a.name)),
-                                ]
-                            })
-                            .collect();
-
-                        let mut spans = vec![Span::styled(
-                            "ACTION MODE - Select: ",
-                            Style::default()
-                                .fg(Color::Black)
-                                .bg(Color::Yellow)
-                                .add_modifier(Modifier::BOLD),
-                        )];
-                        spans.extend(action_shortcuts);
-                        spans.push(Span::styled(
-                            " [ESC to cancel]",
-                            Style::default().fg(Color::DarkGray),
-                        ));
-                        Line::from(spans)
-                    } else {
-                        Line::from("")
-                    }
-                } else {
-                    Line::from("")
-                }
-            } else {
-                Line::from("")
-            }
-        } else if let Some(page) = globals::config().pages.get(&self.current_page) {
-            // Normal mode: show hint to press 'a'
-            if let Some(actions) = &page.actions {
-                if !actions.is_empty() {
-                    Line::from(vec![
-                        Span::styled("Press ", Style::default().fg(Color::DarkGray)),
-                        Span::styled(
-                            "a",
-                            Style::default()
-                                .fg(Color::Yellow)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled(" for actions", Style::default().fg(Color::DarkGray)),
-                    ])
-                } else {
-                    Line::from("")
-                }
+        // Build action hint (if available)
+        let action_line = if let Some(page) = globals::config().pages.get(&self.current_page) {
+            if page.actions.as_ref().map(|a| !a.is_empty()).unwrap_or(false) {
+                Line::from(vec![
+                    Span::styled("Press ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        "Shift+A",
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(" for actions", Style::default().fg(Color::DarkGray)),
+                ])
             } else {
                 Line::from("")
             }
@@ -2637,6 +2918,52 @@ impl App {
             .block(Block::default().borders(Borders::ALL).title("Status"));
 
         frame.render_widget(status, area);
+    }
+
+    fn render_action_executing(&self, frame: &mut Frame, area: Rect) {
+        use ratatui::layout::Alignment;
+        use ratatui::widgets::Clear;
+
+        let spinner_char = crate::ui::loading::get_spinner_char(self.spinner_frame);
+        let text = format!("{} Executing: {}", spinner_char, self.action_executing_name);
+        let text_len = text.chars().count();
+
+        // Dynamic width: fit content + borders (2) + padding (4)
+        let msg_width = (text_len + 6).min(60) as u16;
+        let msg_height = 3_u16; // border + content + border
+
+        // Position at top-right corner
+        let msg_x = area.width.saturating_sub(msg_width + 1);
+        let msg_y = 1;
+
+        let msg_area = Rect {
+            x: msg_x,
+            y: msg_y,
+            width: msg_width,
+            height: msg_height,
+        };
+
+        frame.render_widget(Clear, msg_area);
+
+        let content = Paragraph::new(Line::from(Span::styled(
+            text,
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .style(Style::default().bg(Color::Black)),
+        )
+        .alignment(Alignment::Center);
+
+        frame.render_widget(content, msg_area);
     }
 
     fn render_action_message(&self, frame: &mut Frame, area: Rect, msg: &ActionMessage) {
@@ -2760,6 +3087,114 @@ impl App {
         lines
     }
 
+    fn render_action_menu(&self, frame: &mut Frame, area: Rect) {
+        use ratatui::layout::Alignment;
+        use ratatui::widgets::Clear;
+
+        // Get actions for current page
+        let page = match globals::config().pages.get(&self.current_page) {
+            Some(p) => p,
+            None => return,
+        };
+
+        let actions = match &page.actions {
+            Some(a) if !a.is_empty() => a,
+            _ => return,
+        };
+
+        // Get selected row to show resource context in title
+        let resource_name = self.get_selected_row().and_then(|row| {
+            // Try common name fields in order of preference
+            row.get("name")
+                .or_else(|| row.pointer("/metadata/name"))
+                .or_else(|| row.get("id"))
+                .or_else(|| row.get("title"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        });
+
+        // Calculate popup size based on number of actions
+        let num_actions = actions.len();
+        let popup_height = (num_actions + 5).min(area.height.saturating_sub(4) as usize) as u16;
+        let popup_width = 70.min(area.width.saturating_sub(4));
+        let popup_x = (area.width.saturating_sub(popup_width)) / 2;
+        let popup_y = (area.height.saturating_sub(popup_height)) / 2;
+
+        let popup_area = Rect {
+            x: popup_x,
+            y: popup_y,
+            width: popup_width,
+            height: popup_height,
+        };
+
+        // Clear the background area to hide content behind
+        frame.render_widget(Clear, popup_area);
+
+        // Build the menu lines
+        let mut menu_lines = vec![Line::from("")];
+
+        for (idx, action) in actions.iter().enumerate() {
+            // Parse the key to display it properly
+            let key_display = action.parse_key()
+                .map(|k| k.display())
+                .unwrap_or_else(|_| action.key.clone());
+
+            let description = action.description.as_deref().unwrap_or(&action.name);
+            let line_text = format!("  {} - {}", key_display, description);
+
+            // Highlight selected action
+            let line = if idx == self.action_menu_selected {
+                Line::from(Span::styled(
+                    format!("> {}", line_text.trim_start()),
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ))
+            } else {
+                Line::from(Span::styled(
+                    line_text,
+                    Style::default().fg(Color::White),
+                ))
+            };
+
+            menu_lines.push(line);
+        }
+
+        // Add navigation instructions
+        menu_lines.push(Line::from(""));
+        menu_lines.push(Line::from(Span::styled(
+            "↑↓/jk: Navigate | Enter/Ctrl+Key: Execute | Esc: Cancel",
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
+        )));
+
+        // Build title with resource context if available
+        let title = if let Some(name) = resource_name {
+            format!(" Actions for: {} ", name)
+        } else {
+            " Actions ".to_string()
+        };
+
+        let menu = Paragraph::new(menu_lines)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Cyan))
+                    .style(Style::default().bg(Color::Black))
+                    .title(Span::styled(
+                        title,
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    )),
+            )
+            .alignment(Alignment::Left);
+
+        frame.render_widget(menu, popup_area);
+    }
+
     fn render_action_confirm(&self, frame: &mut Frame, area: Rect, confirm: &ActionConfirm) {
         use ratatui::layout::Alignment;
         use ratatui::widgets::Clear;
@@ -2780,36 +3215,68 @@ impl App {
         // Clear the background area to hide content behind
         frame.render_widget(Clear, popup_area);
 
-        // Render the confirmation dialog
-        let dialog_text = vec![
-            Line::from(""),
-            Line::from(Span::styled(
-                &confirm.message,
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            )),
-            Line::from(""),
-            Line::from(Span::styled(
-                format!("Action: {}", confirm.action.name),
-                Style::default().fg(Color::Cyan),
-            )),
-            Line::from(""),
-            Line::from(Span::raw("Press 'y' to confirm, 'n' or ESC to cancel")),
-            Line::from(""),
-        ];
+        if confirm.executing {
+            // Show executing state with spinner
+            let spinner_char = crate::ui::loading::get_spinner_char(self.spinner_frame);
+            let dialog_text = vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    format!("{} Executing: {}", spinner_char, confirm.action.name),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                )),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "Please wait...",
+                    Style::default().fg(Color::DarkGray),
+                )),
+                Line::from(""),
+            ];
 
-        let dialog = Paragraph::new(dialog_text)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Yellow))
-                    .style(Style::default().bg(Color::Black))
-                    .title("Confirm Action"),
-            )
-            .alignment(Alignment::Center);
+            let dialog = Paragraph::new(dialog_text)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::Yellow))
+                        .style(Style::default().bg(Color::Black))
+                        .title("Executing Action"),
+                )
+                .alignment(Alignment::Center);
 
-        frame.render_widget(dialog, popup_area);
+            frame.render_widget(dialog, popup_area);
+        } else {
+            // Show confirmation prompt
+            let dialog_text = vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    &confirm.message,
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                )),
+                Line::from(""),
+                Line::from(Span::styled(
+                    format!("Action: {}", confirm.action.name),
+                    Style::default().fg(Color::Cyan),
+                )),
+                Line::from(""),
+                Line::from(Span::raw("Press 'y' to confirm, 'n' or ESC to cancel")),
+                Line::from(""),
+            ];
+
+            let dialog = Paragraph::new(dialog_text)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::Yellow))
+                        .style(Style::default().bg(Color::Black))
+                        .title("Confirm Action"),
+                )
+                .alignment(Alignment::Center);
+
+            frame.render_widget(dialog, popup_area);
+        }
     }
 
     fn render_quit_confirm(&self, frame: &mut Frame, area: Rect) {
@@ -2859,12 +3326,42 @@ impl App {
         frame.render_widget(dialog, popup_area);
     }
 
+    /// Update search mode based on current query and table columns (live as user types)
+    fn update_search_mode(&mut self) {
+        if let Some(page) = globals::config().pages.get(&self.current_page) {
+            if let ConfigView::Table(table_view) = &page.view {
+                self.global_search.mode = self.global_search.parse_mode(&table_view.columns);
+                return;
+            }
+        }
+        self.global_search.mode = SearchMode::Global;
+    }
+
     fn apply_sort_and_filter(&mut self) {
         // Start with all indices (optimized - no cloning!)
         let mut indices: Vec<usize> = (0..self.current_data.len()).collect();
 
         // Apply global search filter if active
         if self.global_search.filter_active {
+            // Get table columns if in table view
+            let table_columns = if let Some(page) = globals::config().pages.get(&self.current_page) {
+                if let ConfigView::Table(table_view) = &page.view {
+                    Some(&table_view.columns)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            // Parse search mode with column context
+            if let Some(columns) = table_columns {
+                self.global_search.mode = self.global_search.parse_mode(columns);
+            } else {
+                // Not a table view, force global search
+                self.global_search.mode = SearchMode::Global;
+            }
+
             indices = self.filter_data_indices(&indices);
         }
 
@@ -2884,10 +3381,17 @@ impl App {
             .iter()
             .filter(|&&idx| {
                 if let Some(item) = self.current_data.get(idx) {
-                    // Convert item to searchable string
-                    let item_text = self.item_to_searchable_text(item);
-                    // Use global search to match
-                    self.global_search.matches(&item_text)
+                    match &self.global_search.mode {
+                        SearchMode::Global => {
+                            // Existing behavior: search all fields
+                            let item_text = self.item_to_searchable_text(item);
+                            self.global_search.matches(&item_text)
+                        }
+                        SearchMode::ColumnSpecific { column_path, search_term, .. } => {
+                            // New: search specific column only
+                            self.matches_column_value(item, column_path, search_term)
+                        }
+                    }
                 } else {
                     false
                 }
@@ -2937,6 +3441,39 @@ impl App {
 
         collect_values(item, &mut buffer);
         buffer
+    }
+
+    /// Match a specific column value against a search term
+    fn matches_column_value(&self, item: &Value, column_path: &str, search_term: &str) -> bool {
+        // Extract column value using JSONPath
+        if let Ok(extractor) = JsonPathExtractor::new(column_path) {
+            if let Ok(Some(value)) = extractor.extract_single(item) {
+                // Convert value to string
+                let value_str = match value {
+                    Value::String(s) => s.to_string(),
+                    Value::Number(n) => n.to_string(),
+                    Value::Bool(b) => b.to_string(),
+                    _ => return false,
+                };
+
+                // Check if search term starts with '!' for regex mode
+                if search_term.starts_with('!') {
+                    // Regex matching
+                    let pattern = &search_term[1..];
+                    if let Ok(regex) = Regex::new(pattern) {
+                        return regex.is_match(&value_str);
+                    }
+                } else {
+                    // Literal string matching (case-insensitive by default)
+                    if self.global_search.case_sensitive {
+                        return value_str.contains(search_term);
+                    } else {
+                        return value_str.to_lowercase().contains(&search_term.to_lowercase());
+                    }
+                }
+            }
+        }
+        false
     }
 
     fn sort_data_indices(

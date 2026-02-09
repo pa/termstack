@@ -388,7 +388,7 @@ pages:
     
     # Actions (key bindings)
     actions:
-      - key: "d"
+      - key: "ctrl+d"
         name: "Delete"
         description: "Delete selected item"
         confirm: "Delete {{ name }}?"
@@ -420,7 +420,7 @@ pages:
           var: "{{ value }}"
       
       # Built-in actions (always available)
-      - key: "y"
+      - key: "ctrl+y"
         name: "YAML View"
         builtin: yaml_view
 ```
@@ -1107,7 +1107,15 @@ pub enum SearchAction {
 | `Enter` | Apply | Apply search filter |
 | `Esc` | Cancel | Exit search, clear filter |
 | `Backspace` | Delete | Delete character |
-| `←` / `→` | Move Cursor | Navigate input |
+| `Ctrl+I` | Toggle Case | Toggle case-sensitive search |
+
+**Column-specific search:** Type `%Column Name% term` to search within a specific column. The column name is matched case-insensitively against table column display names. If the column is not found, falls back to global search.
+
+Examples:
+- `nginx` — searches all columns
+- `%Name% nginx` — searches only the "Name" column
+- `%Project Type% active` — handles multi-word column names
+- `!error.*timeout` — regex search across all columns
 
 #### Command Mode [Phase 2]
 
@@ -1508,11 +1516,12 @@ pub enum TermStackError {
   - Action conditions (show only if...)
   - Built-in actions (export, copy, etc.)
 
-- [ ] **Search & Filter**
-  - Fuzzy search
-  - Filter by field
-  - Regex search
-  - Search history
+- [x] **Search & Filter**
+  - [x] Column-specific search (`%col% term` syntax)
+  - [x] Regex search (`!pattern` prefix)
+  - [x] Case-sensitive toggle (Ctrl+I)
+  - [ ] Fuzzy search
+  - [ ] Search history
 
 - [ ] **CLI Commands**
   - `termstack validate <config>` - Validate config

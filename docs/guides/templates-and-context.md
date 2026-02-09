@@ -170,7 +170,7 @@ pages:
       type: text
       syntax: yaml
     actions:
-      - key: "i"
+      - key: "ctrl+i"
         name: "Issues"
         page: repo_issues
         context:
@@ -372,14 +372,14 @@ pages:
   repos:
     # ... table view ...
     actions:
-      - key: "i"
+      - key: "ctrl+i"
         name: "Issues"
         description: "View repository issues"
         page: issues
         context:
           repo_owner: "$.owner.login"
           repo_name: "$.name"
-      - key: "p"
+      - key: "ctrl+r"
         name: "Pull Requests"
         description: "View pull requests"
         page: pull_requests
@@ -389,8 +389,8 @@ pages:
 ```
 
 **Usage:**
-1. Press `a` to enter action mode
-2. Press the action key (e.g., `i` for issues)
+1. Press `Shift+A` to open the action menu (or use `Ctrl+key` shortcut directly)
+2. Select the action (e.g., issues)
 3. Navigate to the target page with context
 
 ### Multi-Level Navigation
@@ -679,7 +679,7 @@ pages:
 ```yaml
 actions:
   # Action with dynamic confirmation
-  - key: "d"
+  - key: "ctrl+d"
     name: "Delete"
     confirm: "Delete {{ row.name }} in {{ namespace }}? This cannot be undone!"
     command: "kubectl"
@@ -687,7 +687,7 @@ actions:
     refresh: true
 
   # Action with conditional visibility (in row condition)
-  - key: "r"
+  - key: "ctrl+r"
     name: "Restart"
     condition: "{{ row.status.phase == 'Failed' }}"
     command: "kubectl"

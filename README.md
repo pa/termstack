@@ -32,7 +32,7 @@ Think of it as "k9s for anything" — Kubernetes, REST APIs, dog breeds (yes, re
 
 ## Demo
 
-[![asciicast](https://asciinema.org/a/777358.svg)](https://asciinema.org/a/777358)
+[![asciicast](https://asciinema.org/a/ozYJrUw1VZIpptEI.svg)](https://asciinema.org/a/ozYJrUw1VZIpptEI)
 
 *Click to view the interactive terminal recording - you can pause, copy text, and replay at your own pace!*
 
@@ -396,17 +396,17 @@ next:
 
 ### Actions
 
-Press `a` to enter action mode, then the action key:
+Press `Shift+A` to open the action menu, or use `Ctrl+key` shortcuts directly:
 
 ```yaml
 actions:
-  - key: "d"
+  - key: "ctrl+d"
     name: "Delete"
     confirm: "Really delete {{ name }}? (no undo!)"
     command: "kubectl"
     args: ["delete", "pod", "{{ name }}"]
     refresh: true
-  - key: "v"
+  - key: "ctrl+v"
     name: "View Details"
     page: "detail_page"
 ```
@@ -451,8 +451,8 @@ transform: "{{ value | upper }}"  # "SHOUTING"
 | `G` | Go to bottom |
 | `Enter` | Select / Navigate |
 | `Esc` | Go back |
-| `/` | Search |
-| `a` | Action mode |
+| `/` | Search (`%col% term` for column) |
+| `Shift+A` | Action menu |
 | `r` | Refresh |
 | `q` | Quit |
 
@@ -527,7 +527,7 @@ A: Make sure your data source is accessible. Try `--verbose` for debug output.
 
 **Q: Actions aren't triggering!**
 
-A: Press `a` first to enter action mode, then your action key.
+A: Press `Shift+A` to open the action menu, or use `Ctrl+key` shortcuts directly.
 
 **Q: Can I use this in production?**
 

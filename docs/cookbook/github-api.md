@@ -241,9 +241,9 @@ pages:
         repo_url: "$.url"
         repo_owner: "$.owner.login"
     
-    # Actions: Press 'a' then action key
+    # Actions: Use Shift+A menu or Ctrl+key shortcuts
     actions:
-      - key: "i"
+      - key: "ctrl+i"
         name: "View Issues"
         description: "Browse repository issues"
         page: "repo_issues"
@@ -276,7 +276,7 @@ pages:
     
     # Press Enter to go back to repository list
     actions:
-      - key: "i"
+      - key: "ctrl+i"
         name: "View Issues"
         description: "Browse issues for this repository"
         page: "repo_issues"
@@ -411,7 +411,7 @@ termstack github-repos.yaml
 - `g` - Jump to top
 - `G` - Jump to bottom
 - `Enter` - View repository details
-- `a` then `i` - View repository issues
+- `Shift+A` then select, or `Ctrl+I` - View repository issues
 - `/` - Search repositories
 - `r` - Refresh data
 - `q` - Quit
@@ -419,7 +419,7 @@ termstack github-repos.yaml
 
 **Repository Details View:**
 - Scroll through YAML details
-- `a` then `i` - View issues
+- `Shift+A` then select, or `Ctrl+I` - View issues
 - `Esc` - Back to repository list
 
 **Issues View:**

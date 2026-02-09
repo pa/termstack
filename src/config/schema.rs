@@ -382,6 +382,10 @@ pub struct ConditionalNavigation {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Action {
+    /// Keyboard shortcut for this action.
+    /// Supports two formats:
+    /// - Single character (legacy): "l", "d", "e"
+    /// - Ctrl combination (recommended): "ctrl+l", "ctrl+d", "ctrl+e"
     pub key: String,
     pub name: String,
     #[serde(default)]
@@ -414,6 +418,13 @@ pub struct Action {
     pub refresh: bool,
     #[serde(default)]
     pub context: HashMap<String, String>,
+}
+
+impl Action {
+    /// Parse the action key into an ActionKey enum
+    pub fn parse_key(&self) -> Result<crate::input::ActionKey, String> {
+        crate::input::ActionKey::parse(&self.key)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

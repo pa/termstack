@@ -8,7 +8,7 @@ use termstack::{
 };
 
 #[derive(Parser)]
-#[command(name = "termstack")]
+#[command(name = "termstack", version)]
 #[command(about = "A generic TUI framework for building dashboards from YAML config", long_about = None)]
 struct Cli {
     /// Path to the YAML configuration file

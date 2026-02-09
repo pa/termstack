@@ -166,9 +166,36 @@ impl ConfigValidator {
     }
 
     fn validate_action(action: &super::schema::Action, page_ids: &HashSet<String>) -> Result<()> {
-        // Validate key
+        // Validate key format
         if action.key.is_empty() {
             return Err(anyhow!("Action key cannot be empty"));
+        }
+
+        // Parse and validate key format
+        let parsed_key = crate::input::ActionKey::parse(&action.key)
+            .map_err(|e| anyhow!("Invalid action key '{}': {}", action.key, e))?;
+
+        // Warn about legacy single-char keys
+        if !parsed_key.is_ctrl() && action.key.len() == 1 {
+            eprintln!(
+                "Warning: Action '{}' uses legacy key format '{}'. \
+                Consider migrating to 'ctrl+{}' for better discoverability.",
+                action.name, action.key, action.key
+            );
+        }
+
+        // Warn about problematic Ctrl combinations that may conflict with terminal
+        if let crate::input::ActionKey::Ctrl(ch) = parsed_key {
+            match ch {
+                'c' | 'z' | 's' | 'q' | 'w' => {
+                    eprintln!(
+                        "Warning: Action '{}' uses Ctrl+{} which may be intercepted by the terminal. \
+                        Consider using a different key combination.",
+                        action.name, ch.to_ascii_uppercase()
+                    );
+                }
+                _ => {}
+            }
         }
 
         // Validate name

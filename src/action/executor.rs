@@ -14,6 +14,7 @@ pub enum ActionResult {
     Navigate(String, std::collections::HashMap<String, String>),
 }
 
+#[derive(Clone)]
 pub struct ActionExecutor {
     template_engine: Arc<TemplateEngine>,
     // No longer store http_client - use global instead

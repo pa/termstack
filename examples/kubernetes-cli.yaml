@@ -87,25 +87,25 @@ pages:
       context:
         namespace: "$.metadata.name"
     actions:
-      - key: "p"
+      - key: "ctrl+p"
         name: "Pods"
         description: "View pods in namespace"
         page: pods
         context:
           namespace: "$.metadata.name"
-      - key: "d"
+      - key: "ctrl+d"
         name: "Deployments"
         description: "View deployments in namespace"
         page: deployments
         context:
           namespace: "$.metadata.name"
-      - key: "s"
+      - key: "ctrl+s"
         name: "Services"
         description: "View services in namespace"
         page: services
         context:
           namespace: "$.metadata.name"
-      - key: "r"
+      - key: "ctrl+r"
         name: "RBAC"
         description: "View RBAC resources"
         page: rbac_overview
@@ -191,14 +191,14 @@ pages:
         pod_name: "$.metadata.name"
         namespace: "{{ namespaces.metadata.name }}"
     actions:
-      - key: "l"
+      - key: "ctrl+l"
         name: "Logs"
         description: "View pod logs"
         page: pod_logs
         context:
           pod_name: "$.metadata.name"
           namespace: "{{ namespaces.metadata.name }}"
-      - key: "d"
+      - key: "ctrl+d"
         name: "Delete"
         description: "Delete pod"
         confirm: "Delete pod {{ metadata.name }}?"
@@ -215,7 +215,7 @@ pages:
           on_success: "Pod '{{ metadata.name }}' deleted successfully"
           on_failure: "Failed to delete pod '{{ metadata.name }}'"
         refresh: true
-      - key: "e"
+      - key: "ctrl+e"
         name: "Describe"
         description: "Describe pod"
         page: pod_describe
@@ -246,11 +246,11 @@ pages:
       syntax: yaml
       line_numbers: true
     actions:
-      - key: "l"
+      - key: "ctrl+l"
         name: "Logs"
         description: "View logs"
         page: pod_logs
-      - key: "y"
+      - key: "ctrl+y"
         name: "YAML"
         description: "View raw YAML"
         builtin: yaml_view
@@ -384,7 +384,7 @@ pages:
       context:
         deployment_name: "$.metadata.name"
     actions:
-      - key: "s"
+      - key: "ctrl+s"
         name: "Scale"
         description: "Scale deployment"
         command: "kubectl"
@@ -400,7 +400,7 @@ pages:
         confirm: "Scale {{ metadata.name }} to 3 replicas?"
         success_message: "Scaled {{ metadata.name }}"
         refresh: true
-      - key: "r"
+      - key: "ctrl+r"
         name: "Restart"
         description: "Restart deployment"
         command: "kubectl"
@@ -416,7 +416,7 @@ pages:
         confirm: "Restart {{ metadata.name }}?"
         success_message: "Restarted {{ metadata.name }}"
         refresh: true
-      - key: "d"
+      - key: "ctrl+d"
         name: "Delete"
         description: "Delete deployment"
         confirm: "Delete deployment {{ metadata.name }}?"
@@ -459,7 +459,7 @@ pages:
       syntax: json
       line_numbers: true
     actions:
-      - key: "p"
+      - key: "ctrl+p"
         name: "Pods"
         description: "View pods for this deployment"
         page: deployment_pods
@@ -585,7 +585,7 @@ pages:
       context:
         service_name: "$.metadata.name"
     actions:
-      - key: "d"
+      - key: "ctrl+d"
         name: "Delete"
         description: "Delete service"
         confirm: "Delete service {{ metadata.name }}?"
@@ -681,19 +681,19 @@ pages:
         rbac_kind: "$.kind"
         rbac_name: "$.metadata.name"
     actions:
-      - key: "r"
+      - key: "ctrl+r"
         name: "Roles"
         description: "View roles only"
         page: roles
         context:
           namespace: "{{ namespaces.metadata.name }}"
-      - key: "b"
+      - key: "ctrl+b"
         name: "RoleBindings"
         description: "View role bindings only"
         page: rolebindings
         context:
           namespace: "{{ namespaces.metadata.name }}"
-      - key: "c"
+      - key: "ctrl+c"
         name: "ClusterRoles"
         description: "View cluster-wide roles"
         page: clusterroles

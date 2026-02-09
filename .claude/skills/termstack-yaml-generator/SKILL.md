@@ -68,7 +68,7 @@ pages:
       context:
         item_id: "$.id"
     actions:
-      - key: "d"
+      - key: "ctrl+d"
         name: "Details"
         page: "detail_page"
         context:
@@ -228,56 +228,36 @@ next:
 
 ### 4. Actions
 
-Actions are triggered by pressing `a` then the action key:
+Actions are triggered via the Shift+A menu or direct Ctrl+key shortcuts:
 
 ```yaml
 actions:
   # Execute command
-  - key: "d"
+  - key: "ctrl+d"
     name: "Delete"
     description: "Delete this item"
     confirm: "Are you sure you want to delete {{ name }}?"
     command: "curl"
     args: ["-X", "DELETE", "{{ api_base }}/items/{{ id }}"]
     refresh: true
-    
+
   # Navigate to page
-  - key: "v"
+  - key: "ctrl+v"
     name: "View Details"
     page: "detail_page"
     context:
       item_id: "$.id"
-      
+
   # Open in external app
-  - key: "o"
+  - key: "ctrl+o"
     name: "Open in Browser"
     command: "open"
     args: ["{{ html_url }}"]
-    
-  # Builtin actions
-  - key: "y"
+
+  # Builtin action (yaml_view is useful as a custom action)
+  - key: "ctrl+y"
     name: "YAML View"
     builtin: yaml_view
-    
-  - key: "h"
-    name: "Help"
-    builtin: help
-    
-  - key: "s"
-    name: "Search"
-    builtin: search
-    
-  - key: "r"
-    name: "Refresh"
-    builtin: refresh
-    
-  - key: "b"
-    name: "Back"
-    builtin: back
-    
-  - key: "q"
-    name: "Quit"
-    builtin: quit
 ```
 
 ### 5. Multiple Data Sources
@@ -333,12 +313,12 @@ detail:
     url: "{{ api_base }}/users/{{ user_id }}"
 ```
 
-#### B. Action Navigation (a + key) - Uses Templates
+#### B. Action Navigation (Shift+A menu / Ctrl+key) - Uses Templates
 
 ```yaml
 # Source page - action context ACCEPTS template expressions
 actions:
-  - key: "d"
+  - key: "ctrl+d"
     page: detail
     context:
       user_id: "{{ id }}"                    # ✅ Template - from current row
@@ -404,7 +384,7 @@ data:
 
 # Navigate to logs
 actions:
-  - key: "l"
+  - key: "ctrl+l"
     page: pod_logs
     context:
       pod_name: "{{ metadata.name }}"      # Template - from current pod
@@ -605,7 +585,7 @@ pages:
         breed_id: "$.id"
         breed_name: "$.attributes.name"
     actions:
-      - key: "f"
+      - key: "ctrl+f"
         name: "View Facts"
         page: "facts"
 
@@ -703,7 +683,7 @@ pages:
         pod_name: "$.metadata.name"       # JSONPath for next navigation
         pod_namespace: "$.metadata.namespace"
     actions:
-      - key: "l"
+      - key: "ctrl+l"
         name: "View Logs"
         page: "pod_logs"
         context:
@@ -946,11 +926,11 @@ curl -fsSL https://github.com/pa/termstack/releases/latest/download/termstack-li
 
 - `Enter` - Navigate to next page (defined by `next`)
 - `Esc` - Go back
-- `a` + key - Trigger action
+- `Shift+A` - Open action menu
 - `j`/`k` or arrows - Move up/down
 - `g` - Go to top
 - `G` - Go to bottom
-- `/` - Search
+- `/` - Search (use `%Column Name% term` for column-specific search)
 - `q` - Quit
 - `r` - Refresh data
 - `f` - Toggle filter (in logs view)
@@ -984,7 +964,7 @@ data:
 
 # ✅ CORRECT - Pass namespace explicitly in context
 actions:
-  - key: "l"
+  - key: "ctrl+l"
     page: pod_logs
     context:
       pod_name: "{{ metadata.name }}"
@@ -1014,13 +994,13 @@ next:
 
 # ❌ WRONG - JSONPath in action.context
 actions:
-  - key: "d"
+  - key: "ctrl+d"
     context:
       name: "$.metadata.name"  # Won't work!
 
 # ✅ CORRECT - Template in action.context
 actions:
-  - key: "d"
+  - key: "ctrl+d"
     context:
       name: "{{ metadata.name }}"
 ```
@@ -1062,7 +1042,7 @@ title: "Pods in {{ namespace }}"  # Use extracted value
 
 # Check 1: Was it passed in context?
 actions:
-  - key: "l"
+  - key: "ctrl+l"
     context:
       pod_name: "{{ metadata.name }}"  # ✅ Passed
 
