@@ -1119,7 +1119,7 @@ impl App {
             }
             KeyCode::Char('f') => {
                 // Toggle follow in logs view (when paused, 'f' resumes LIVE mode)
-                if self.stream_active {
+                if self.stream_active || !self.stream_buffer.is_empty() {
                     if self.stream_paused {
                         // Currently paused, resume to LIVE
                         self.stream_paused = false;
@@ -1142,7 +1142,7 @@ impl App {
             }
             KeyCode::Char('w') => {
                 // Toggle wrap in logs view
-                if self.stream_active {
+                if self.stream_active || !self.stream_buffer.is_empty() {
                     self.logs_wrap = !self.logs_wrap;
                     // Reset horizontal scroll when enabling wrap
                     if self.logs_wrap {
@@ -1154,7 +1154,7 @@ impl App {
             }
             KeyCode::Left => {
                 // Scroll left in logs view (when wrap is off)
-                if self.stream_active && !self.logs_wrap {
+                if (self.stream_active || !self.stream_buffer.is_empty()) && !self.logs_wrap {
                     self.logs_horizontal_scroll = self.logs_horizontal_scroll.saturating_sub(5);
                     // Always render user actions, even when paused
                     self.needs_render = true;
@@ -1162,14 +1162,14 @@ impl App {
             }
             KeyCode::Right => {
                 // Scroll right in logs view (when wrap is off)
-                if self.stream_active && !self.logs_wrap {
+                if (self.stream_active || !self.stream_buffer.is_empty()) && !self.logs_wrap {
                     self.logs_horizontal_scroll = self.logs_horizontal_scroll.saturating_add(5);
                     // Always render user actions, even when paused
                     self.needs_render = true;
                 }
             }
             KeyCode::Char('h') => {
-                if self.stream_active && !self.logs_wrap {
+                if (self.stream_active || !self.stream_buffer.is_empty()) && !self.logs_wrap {
                     // Horizontal scroll left in logs view
                     self.logs_horizontal_scroll = self.logs_horizontal_scroll.saturating_sub(5);
                     // Always render user actions, even when paused
@@ -1177,7 +1177,7 @@ impl App {
                 }
             }
             KeyCode::Char('l') => {
-                if self.stream_active && !self.logs_wrap {
+                if (self.stream_active || !self.stream_buffer.is_empty()) && !self.logs_wrap {
                     // Horizontal scroll right in logs view
                     self.logs_horizontal_scroll = self.logs_horizontal_scroll.saturating_add(5);
                     // Always render user actions, even when paused
