@@ -1,3 +1,30 @@
+# =============================================================================
+# Kubernetes Dashboard
+# =============================================================================
+# A k9s-inspired interface for navigating Kubernetes resources.
+# Because sometimes you need YAML to manage your YAML deployments.
+#
+# Usage: cargo run -- examples/kubernetes-cli.yaml
+#
+# Requirements:
+# - kubectl installed and configured
+# - Access to a Kubernetes cluster (or prepare for errors)
+#
+# This example demonstrates:
+# - CLI adapter with kubectl commands
+# - Complex JSONPath for nested data extraction
+# - Status-based conditional styling
+# - Actions for pod management (delete, logs, describe)
+# - Streaming logs with the stream adapter
+# - Multiple resource types (pods, deployments, services, RBAC)
+# - Transforms for human-readable timestamps
+#
+# Navigation flow:
+# Namespaces -> Pods/Deployments/Services -> Details -> Logs
+#
+# Pro tip: Press 'a' to see available actions on any page.
+# =============================================================================
+
 version: v1
 
 app:
@@ -5,7 +32,6 @@ app:
   description: "Navigate Kubernetes resources with k9s-style interface"
   theme: "default"
 
-# Start at namespaces view
 start: namespaces
 
 pages:
@@ -61,25 +87,25 @@ pages:
       context:
         namespace: "$.metadata.name"
     actions:
-      - key: "p"
+      - key: "ctrl+p"
         name: "Pods"
         description: "View pods in namespace"
         page: pods
         context:
           namespace: "$.metadata.name"
-      - key: "d"
+      - key: "ctrl+d"
         name: "Deployments"
         description: "View deployments in namespace"
         page: deployments
         context:
           namespace: "$.metadata.name"
-      - key: "s"
+      - key: "ctrl+s"
         name: "Services"
         description: "View services in namespace"
         page: services
         context:
           namespace: "$.metadata.name"
-      - key: "r"
+      - key: "ctrl+r"
         name: "RBAC"
         description: "View RBAC resources"
         page: rbac_overview
@@ -137,22 +163,13 @@ pages:
               color: red
             - default: true
               color: yellow
-        - path: "$.spec.containers[*].name"
+        - path: "$.spec.containers"
           display: "Containers"
           transform: "{{ value | length }}"
           width: 12
           style:
             - default: true
               color: blue
-        - path: "$.status.containerStatuses[?(@.ready==true)]"
-          display: "Ready/Total"
-          transform: "{{ value | length }}/{{ row.status.containerStatuses | length }}"
-          width: 12
-          style:
-            - condition: "{{ value | length == row.status.containerStatuses | length }}"
-              color: green
-            - default: true
-              color: yellow
         - path: "$.metadata.creationTimestamp"
           display: "Age"
           transform: "{{ value | timeago }}"
@@ -174,14 +191,14 @@ pages:
         pod_name: "$.metadata.name"
         namespace: "{{ namespaces.metadata.name }}"
     actions:
-      - key: "l"
+      - key: "ctrl+l"
         name: "Logs"
         description: "View pod logs"
         page: pod_logs
         context:
           pod_name: "$.metadata.name"
           namespace: "{{ namespaces.metadata.name }}"
-      - key: "d"
+      - key: "ctrl+d"
         name: "Delete"
         description: "Delete pod"
         confirm: "Delete pod {{ metadata.name }}?"
@@ -198,7 +215,7 @@ pages:
           on_success: "Pod '{{ metadata.name }}' deleted successfully"
           on_failure: "Failed to delete pod '{{ metadata.name }}'"
         refresh: true
-      - key: "e"
+      - key: "ctrl+e"
         name: "Describe"
         description: "Describe pod"
         page: pod_describe
@@ -229,11 +246,11 @@ pages:
       syntax: yaml
       line_numbers: true
     actions:
-      - key: "l"
+      - key: "ctrl+l"
         name: "Logs"
         description: "View logs"
         page: pod_logs
-      - key: "y"
+      - key: "ctrl+y"
         name: "YAML"
         description: "View raw YAML"
         builtin: yaml_view
@@ -367,7 +384,7 @@ pages:
       context:
         deployment_name: "$.metadata.name"
     actions:
-      - key: "s"
+      - key: "ctrl+s"
         name: "Scale"
         description: "Scale deployment"
         command: "kubectl"
@@ -383,7 +400,7 @@ pages:
         confirm: "Scale {{ metadata.name }} to 3 replicas?"
         success_message: "Scaled {{ metadata.name }}"
         refresh: true
-      - key: "r"
+      - key: "ctrl+r"
         name: "Restart"
         description: "Restart deployment"
         command: "kubectl"
@@ -399,7 +416,7 @@ pages:
         confirm: "Restart {{ metadata.name }}?"
         success_message: "Restarted {{ metadata.name }}"
         refresh: true
-      - key: "d"
+      - key: "ctrl+d"
         name: "Delete"
         description: "Delete deployment"
         confirm: "Delete deployment {{ metadata.name }}?"
@@ -442,7 +459,7 @@ pages:
       syntax: json
       line_numbers: true
     actions:
-      - key: "p"
+      - key: "ctrl+p"
         name: "Pods"
         description: "View pods for this deployment"
         page: deployment_pods
@@ -568,7 +585,7 @@ pages:
       context:
         service_name: "$.metadata.name"
     actions:
-      - key: "d"
+      - key: "ctrl+d"
         name: "Delete"
         description: "Delete service"
         confirm: "Delete service {{ metadata.name }}?"
@@ -664,19 +681,19 @@ pages:
         rbac_kind: "$.kind"
         rbac_name: "$.metadata.name"
     actions:
-      - key: "r"
+      - key: "ctrl+r"
         name: "Roles"
         description: "View roles only"
         page: roles
         context:
           namespace: "{{ namespaces.metadata.name }}"
-      - key: "b"
+      - key: "ctrl+b"
         name: "RoleBindings"
         description: "View role bindings only"
         page: rolebindings
         context:
           namespace: "{{ namespaces.metadata.name }}"
-      - key: "c"
+      - key: "ctrl+c"
         name: "ClusterRoles"
         description: "View cluster-wide roles"
         page: clusterroles

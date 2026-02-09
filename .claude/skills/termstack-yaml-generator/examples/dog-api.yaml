@@ -1,14 +1,24 @@
-# Dog API Example
-# Browse dog breeds and facts from DogAPI.dog
+# =============================================================================
+# Dog API Browser
+# =============================================================================
+# Browse dog breeds and facts using the free DogAPI.dog service.
+# No authentication required - perfect for demos and learning!
 #
 # Usage: cargo run -- examples/dog-api.yaml
 #
 # This example demonstrates:
 # - HTTP adapter for REST API calls
-# - JSON:API format handling
+# - JSON:API format handling ($.data[*] extraction)
 # - Multi-page navigation with context passing
-# - Detailed breed information
-# - No authentication required
+# - Conditional styling based on values
+# - Action shortcuts for quick navigation
+# - Detailed views for individual items
+#
+# API: https://dogapi.dog/docs/api-v2
+#
+# Fun fact: There are over 200 dog breeds recognized worldwide.
+# This API knows about most of them. Your terminal is about to get adorable.
+# =============================================================================
 
 version: v1
 
@@ -23,6 +33,11 @@ globals:
 start: breeds
 
 pages:
+  # --------------------------------------------------------------------------
+  # Breeds List - Main landing page
+  # --------------------------------------------------------------------------
+  # Shows all dog breeds in a beautiful table.
+  # Press Enter to see breed details, or use actions for quick navigation.
   breeds:
     title: "Dog Breeds"
     data:
@@ -85,15 +100,20 @@ pages:
         breed_id: "$.id"
         breed_name: "$.attributes.name"
     actions:
-      - key: "f"
+      - key: "ctrl+f"
         name: "View Facts"
         description: "View random dog facts"
         page: "facts"
-      - key: "g"
+      - key: "ctrl+g"
         name: "View Groups"
         description: "View breed groups"
         page: "groups"
 
+  # --------------------------------------------------------------------------
+  # Breed Detail - Single breed information
+  # --------------------------------------------------------------------------
+  # Detailed view of a specific breed including weight ranges and description.
+  # Context: breed_id and breed_name passed from breeds page.
   breed_detail:
     title: "{{ breed_name }}"
     data:
@@ -162,15 +182,20 @@ pages:
             - default: true
               color: gray
     actions:
-      - key: "f"
+      - key: "ctrl+f"
         name: "View Facts"
         description: "View random dog facts"
         page: "facts"
-      - key: "y"
+      - key: "ctrl+y"
         name: "View as YAML"
         description: "View full JSON response"
         page: "breed_yaml"
 
+  # --------------------------------------------------------------------------
+  # Breed YAML View - Raw API response
+  # --------------------------------------------------------------------------
+  # Shows the full JSON response formatted as YAML.
+  # Great for debugging or seeing the complete data structure.
   breed_yaml:
     title: "{{ breed_name }} (YAML)"
     data:
@@ -183,6 +208,10 @@ pages:
       type: text
       syntax: yaml
 
+  # --------------------------------------------------------------------------
+  # Dog Facts - Random fun facts about dogs
+  # --------------------------------------------------------------------------
+  # Did you know dogs can smell emotions? Neither did we until this API.
   facts:
     title: "Dog Facts"
     data:
@@ -207,6 +236,9 @@ pages:
         fact_id: "$.id"
         fact_body: "$.attributes.body"
 
+  # --------------------------------------------------------------------------
+  # Fact Detail - Single fact view
+  # --------------------------------------------------------------------------
   fact_detail:
     title: "Dog Fact"
     data:
@@ -219,6 +251,10 @@ pages:
       type: text
       syntax: yaml
 
+  # --------------------------------------------------------------------------
+  # Breed Groups - Categories of dog breeds
+  # --------------------------------------------------------------------------
+  # Breeds are organized into groups like Herding, Sporting, Toy, etc.
   groups:
     title: "Breed Groups"
     data:
@@ -244,6 +280,10 @@ pages:
         group_id: "$.id"
         group_name: "$.attributes.name"
 
+  # --------------------------------------------------------------------------
+  # Group Detail - Breeds in a specific group
+  # --------------------------------------------------------------------------
+  # Shows details about a breed group including how many breeds it contains.
   group_detail:
     title: "{{ group_name }}"
     data:
