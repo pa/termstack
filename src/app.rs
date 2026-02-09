@@ -215,8 +215,7 @@ pub struct App {
     selected_index: usize,
     scroll_offset: usize,
     table_state: ratatui::widgets::TableState,
-    loading: bool,
-    is_refreshing: bool,  // Distinguish background refresh from initial load
+    activity: ActivityState,
     spinner_frame: usize, // Current spinner animation frame (0-9)
     error_message: Option<String>,
 
@@ -227,8 +226,6 @@ pub struct App {
     show_quit_confirm: bool,
     action_confirm: Option<ActionConfirm>,
 
-    // Action result message
-    action_message: Option<ActionMessage>,
 
     // Auto-refresh timer
     last_refresh: std::time::Instant,
@@ -247,8 +244,6 @@ pub struct App {
     logs_horizontal_scroll: usize,
 
     // Background action execution
-    action_executing: bool,
-    action_executing_name: String,
     pending_action_info: Option<PendingActionInfo>,
     action_result_receiver: Option<mpsc::Receiver<ActionResultMsg>>,
 
@@ -270,7 +265,8 @@ pub struct App {
 #[derive(Debug)]
 enum RefreshMessage {
     Started { page_name: String },
-    Completed { page_name: String, data: Vec<Value> },
+    Completed { page_name: String, data: Vec<Value>, reset_selection: bool },
+    Error { page_name: String, error: String },
 }
 
 #[derive(Clone)]
@@ -280,13 +276,6 @@ struct ActionConfirm {
     executing: bool,
 }
 
-#[derive(Clone)]
-struct ActionMessage {
-    message: String,
-    message_type: MessageType,
-    timestamp: std::time::Instant,
-}
-
 #[derive(Clone, Copy, PartialEq)]
 #[allow(dead_code)]
 enum MessageType {
@@ -294,6 +283,19 @@ enum MessageType {
     Error,
     Info,
     Warning,
+}
+
+#[derive(Clone)]
+enum ActivityState {
+    Idle,
+    Loading { message: String },
+    Result { message: String, kind: MessageType, timestamp: std::time::Instant },
+}
+
+impl ActivityState {
+    fn is_loading(&self) -> bool {
+        matches!(self, ActivityState::Loading { .. })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -337,14 +339,12 @@ impl App {
             selected_index: 0,
             scroll_offset: 0,
             table_state: ratatui::widgets::TableState::default(),
-            loading: false,
-            is_refreshing: false,
+            activity: ActivityState::Idle,
             spinner_frame: 0,
             error_message: None,
             global_search: GlobalSearch::default(),
             show_quit_confirm: false,
             action_confirm: None,
-            action_message: None,
             last_refresh: std::time::Instant::now(),
             stream_active: false,
             stream_paused: false,
@@ -355,8 +355,6 @@ impl App {
             logs_follow: true,
             logs_wrap: true,
             logs_horizontal_scroll: 0,
-            action_executing: false,
-            action_executing_name: String::new(),
             pending_action_info: None,
             action_result_receiver: None,
             show_action_menu: false,
@@ -371,61 +369,8 @@ impl App {
     pub async fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
         self.running = true;
 
-        // Set loading state and spawn initial page load as background task
-        self.loading = true;
-        self.is_refreshing = false;
-        self.spinner_frame = 0;
-        self.needs_render = true;
-
-        // Check if start page is a stream data source
-        let is_stream = globals::config()
-            .pages
-            .get(&self.current_page)
-            .map(|p| {
-                matches!(
-                    &p.data,
-                    crate::config::DataSource::SingleOrStream(
-                        crate::config::SingleOrStream::Stream(_)
-                    )
-                )
-            })
-            .unwrap_or(false);
-
-        // Create channel for initial load — always created so initial_rx exists in the event loop.
-        // For stream pages, the sender is dropped immediately so try_recv() returns a harmless error.
-        let (initial_tx, mut initial_rx) =
-            tokio::sync::mpsc::channel::<(Option<Vec<Value>>, Option<String>)>(1);
-
-        if is_stream {
-            // Stream pages need direct async loading (start_stream needs &mut self)
-            self.load_current_page().await;
-        } else {
-            // Non-stream: spawn background task for animated spinner
-            let current_page = self.current_page.clone();
-            let nav_context = self.nav_context.clone();
-            let adapter_registry = self.adapter_registry.clone();
-
-            tokio::spawn(async move {
-                let page = match globals::config().pages.get(&current_page).cloned() {
-                    Some(p) => p,
-                    None => {
-                        let _ = initial_tx
-                            .send((None, Some(format!("Page not found: {}", current_page))))
-                            .await;
-                        return;
-                    }
-                };
-
-                match Self::fetch_data_static(&page, &nav_context, &adapter_registry).await {
-                    Ok(data) => {
-                        let _ = initial_tx.send((Some(data), None)).await;
-                    }
-                    Err(e) => {
-                        let _ = initial_tx.send((None, Some(e.to_string()))).await;
-                    }
-                }
-            });
-        }
+        // Load initial page (non-blocking for non-stream pages)
+        self.load_current_page().await;
 
         while self.running {
             if self.needs_clear {
@@ -433,31 +378,7 @@ impl App {
                 self.needs_clear = false;
             }
 
-            // Check for initial load completion
-            if let Ok((data_opt, error_opt)) = initial_rx.try_recv() {
-                if let Some(data) = data_opt {
-                    // Cache the data
-                    self.page_cache
-                        .insert(self.current_page.clone(), data.clone());
-
-                    self.current_data = data;
-                    self.apply_sort_and_filter();
-                    self.selected_index = 0;
-                    self.scroll_offset = 0;
-                    self.loading = false;
-
-                    // Spawn refresh watcher if needed
-                    if let Some(page) = globals::config().pages.get(&self.current_page).cloned() {
-                        self.spawn_refresh_watcher(self.current_page.clone(), page);
-                    }
-                } else if let Some(error) = error_opt {
-                    self.error_message = Some(format!("Failed to load data: {}", error));
-                    self.loading = false;
-                }
-                self.needs_render = true;
-            }
-
-            // Check for refresh updates from background watcher
+            // Check for background load / refresh updates
             self.check_refresh_updates();
 
             // Check for stream updates
@@ -477,15 +398,15 @@ impl App {
             }
 
             // Auto-dismiss notifications after 3 seconds
-            if let Some(msg) = &self.action_message
-                && msg.timestamp.elapsed() > std::time::Duration::from_secs(3)
-            {
-                self.action_message = None;
-                self.needs_render = true;
+            if let ActivityState::Result { timestamp, .. } = &self.activity {
+                if timestamp.elapsed() > std::time::Duration::from_secs(3) {
+                    self.activity = ActivityState::Idle;
+                    self.needs_render = true;
+                }
             }
 
-            // Advance spinner animation if loading or executing action
-            if self.loading || self.is_refreshing || self.action_executing {
+            // Advance spinner animation if loading
+            if self.activity.is_loading() {
                 self.advance_spinner();
                 self.needs_render = true;
             }
@@ -515,8 +436,7 @@ impl App {
 
     fn load_current_page_background(&mut self) {
         // Show spinner while loading fresh data in background
-        self.loading = true;
-        self.is_refreshing = false;
+        self.activity = ActivityState::Loading { message: "Refreshing...".into() };
         self.spinner_frame = 0;
         self.needs_render = true;
 
@@ -551,20 +471,24 @@ impl App {
                         .send(RefreshMessage::Completed {
                             page_name: current_page,
                             data,
+                            reset_selection: false,
                         })
                         .await;
                 }
                 Err(e) => {
-                    // Send error message
-                    eprintln!("Background refresh failed: {}", e);
+                    let _ = tx
+                        .send(RefreshMessage::Error {
+                            page_name: current_page,
+                            error: e.to_string(),
+                        })
+                        .await;
                 }
             }
         });
     }
 
     async fn load_current_page(&mut self) {
-        self.loading = true;
-        self.is_refreshing = false; // Initial load, not a refresh
+        self.activity = ActivityState::Loading { message: format!("Loading {}...", self.current_page) };
         self.spinner_frame = 0; // Reset spinner animation
         self.error_message = None;
         self.needs_render = true; // Force render to show spinner
@@ -576,7 +500,7 @@ impl App {
             Some(p) => p,
             None => {
                 self.error_message = Some(format!("Page not found: {}", self.current_page));
-                self.loading = false;
+                self.activity = ActivityState::Idle;
                 return;
             }
         };
@@ -585,40 +509,41 @@ impl App {
         if let crate::config::DataSource::SingleOrStream(crate::config::SingleOrStream::Stream(_)) =
             &page.data
         {
-            // Start streaming
+            // Start streaming (needs &mut self, must be synchronous)
             if let Err(e) = self.start_stream(&page).await {
                 self.error_message = Some(format!("Failed to start stream: {}", e));
-                self.loading = false;
+                self.activity = ActivityState::Idle;
             } else {
-                self.loading = false;
+                self.activity = ActivityState::Idle;
             }
             return;
         }
 
-        // Fetch data for non-stream sources
-        match self.fetch_page_data(&page).await {
-            Ok(data) => {
-                // Cache the data for this page
-                self.page_cache
-                    .insert(self.current_page.clone(), data.clone());
+        // Non-stream: spawn background task so the event loop keeps rendering the spinner
+        let (tx, rx) = mpsc::channel(10);
+        self.refresh_receiver = Some(rx);
 
-                self.current_data = data;
-                self.apply_sort_and_filter();
-                self.selected_index = 0;
-                self.scroll_offset = 0;
-                self.loading = false;
-                self.last_refresh = std::time::Instant::now();
-                self.needs_render = true;
+        let current_page = self.current_page.clone();
+        let nav_context = self.nav_context.clone();
+        let adapter_registry = self.adapter_registry.clone();
 
-                // Spawn background refresh watcher if refresh_interval is set
-                self.spawn_refresh_watcher(self.current_page.clone(), page);
+        tokio::spawn(async move {
+            match Self::fetch_data_static(&page, &nav_context, &adapter_registry).await {
+                Ok(data) => {
+                    let _ = tx.send(RefreshMessage::Completed {
+                        page_name: current_page,
+                        data,
+                        reset_selection: true,
+                    }).await;
+                }
+                Err(e) => {
+                    let _ = tx.send(RefreshMessage::Error {
+                        page_name: current_page,
+                        error: e.to_string(),
+                    }).await;
+                }
             }
-            Err(e) => {
-                self.error_message = Some(format!("Failed to load data: {}", e));
-                self.loading = false;
-                self.needs_render = true;
-            }
-        }
+        });
     }
 
     fn spawn_refresh_watcher(&mut self, page_name: String, page: crate::config::Page) {
@@ -678,6 +603,7 @@ impl App {
                         .send(RefreshMessage::Completed {
                             page_name: page_name.clone(),
                             data,
+                            reset_selection: false,
                         })
                         .await
                         .is_err()
@@ -705,21 +631,37 @@ impl App {
                 RefreshMessage::Started { page_name } => {
                     // Mark as refreshing if it's for the current page
                     if page_name == self.current_page {
-                        self.is_refreshing = true;
+                        self.activity = ActivityState::Loading { message: "Refreshing...".into() };
                         self.spinner_frame = 0; // Reset spinner
                         self.needs_render = true;
                     }
                 }
-                RefreshMessage::Completed { page_name, data } => {
+                RefreshMessage::Completed { page_name, data, reset_selection } => {
                     // Cache the refreshed data
                     self.page_cache.insert(page_name.clone(), data.clone());
 
-                    // Update data and stop both loading and refreshing indicators
+                    // Update data and stop loading indicator
                     if page_name == self.current_page {
                         self.current_data = data;
                         self.apply_sort_and_filter();
-                        self.loading = false;
-                        self.is_refreshing = false;
+                        if reset_selection {
+                            self.selected_index = 0;
+                            self.scroll_offset = 0;
+                        }
+                        self.activity = ActivityState::Idle;
+                        self.last_refresh = std::time::Instant::now();
+                        self.needs_render = true;
+
+                        // Spawn/restart refresh watcher if page has refresh_interval
+                        if let Some(page_config) = globals::config().pages.get(&self.current_page).cloned() {
+                            self.spawn_refresh_watcher(self.current_page.clone(), page_config);
+                        }
+                    }
+                }
+                RefreshMessage::Error { page_name, error } => {
+                    if page_name == self.current_page {
+                        self.error_message = Some(format!("Failed to load data: {}", error));
+                        self.activity = ActivityState::Idle;
                         self.needs_render = true;
                     }
                 }
@@ -857,11 +799,6 @@ impl App {
                 }
             }
         }
-    }
-
-    async fn fetch_page_data(&self, page: &crate::config::Page) -> Result<Vec<Value>> {
-        // Delegate to static method (consolidation to avoid duplication)
-        Self::fetch_data_static(page, &self.nav_context, &self.adapter_registry).await
     }
 
     fn create_template_context(&self, current_row: Option<&Value>) -> TemplateContext {
@@ -1021,9 +958,22 @@ impl App {
             }
         }
 
-        // Clear action message on any key
-        if self.action_message.is_some() {
-            self.action_message = None;
+        // Clear result notification on any key
+        if matches!(self.activity, ActivityState::Result { .. }) {
+            self.activity = ActivityState::Idle;
+        }
+
+        // Block action-triggering input while loading
+        if self.activity.is_loading() {
+            // Allow: q/Esc (quit), j/k/arrows (scroll), / (search), Backspace (back)
+            // Block: Ctrl+key actions, Shift+A menu, Enter (drill-down)
+            match key.code {
+                KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('j') | KeyCode::Char('k')
+                | KeyCode::Up | KeyCode::Down | KeyCode::Char('/') | KeyCode::Backspace => {
+                    // Allow these through
+                }
+                _ => return,
+            }
         }
 
         // Handle Ctrl+key combinations for direct action execution
@@ -1360,7 +1310,7 @@ impl App {
 
     async fn execute_action(&mut self, action: &crate::config::schema::Action) {
         // Block concurrent actions
-        if self.action_executing {
+        if self.activity.is_loading() {
             return;
         }
 
@@ -1370,6 +1320,7 @@ impl App {
         {
             let page = page.clone();
             let context_map = action.context.clone();
+            self.activity = ActivityState::Loading { message: format!("{}...", action.name) };
             self.navigate_to_page(&page, context_map).await;
             return;
         }
@@ -1380,8 +1331,7 @@ impl App {
         let context = self.create_template_context_map();
 
         // Set up background execution state
-        self.action_executing = true;
-        self.action_executing_name = action.name.clone();
+        self.activity = ActivityState::Loading { message: format!("Executing: {}...", action.name) };
         self.spinner_frame = 0;
         self.needs_render = true;
 
@@ -1421,8 +1371,6 @@ impl App {
         };
 
         // Clear execution state
-        self.action_executing = false;
-        self.action_executing_name.clear();
         self.action_result_receiver = None;
         self.action_confirm = None; // Dismiss confirm dialog if it was showing executing state
 
@@ -1440,8 +1388,8 @@ impl App {
                 }
             }
             ActionResultMsg::Completed(Err(e)) => {
-                if let Some(info) = &pending {
-                    let message = if let Some(notification) = &info.action.notification {
+                let message = if let Some(info) = &pending {
+                    if let Some(notification) = &info.action.notification {
                         if let Some(custom_msg) = &notification.on_failure {
                             globals::template_engine()
                                 .render_string(custom_msg, &info.template_ctx)
@@ -1455,20 +1403,16 @@ impl App {
                             .unwrap_or_else(|_| format!("Action failed: {}", e))
                     } else {
                         format!("Action failed: {}", e)
-                    };
-
-                    self.action_message = Some(ActionMessage {
-                        message,
-                        message_type: MessageType::Error,
-                        timestamp: std::time::Instant::now(),
-                    });
+                    }
                 } else {
-                    self.action_message = Some(ActionMessage {
-                        message: format!("Action failed: {}", e),
-                        message_type: MessageType::Error,
-                        timestamp: std::time::Instant::now(),
-                    });
-                }
+                    format!("Action failed: {}", e)
+                };
+
+                self.activity = ActivityState::Result {
+                    message,
+                    kind: MessageType::Error,
+                    timestamp: std::time::Instant::now(),
+                };
                 self.needs_render = true;
                 None
             }
@@ -1491,24 +1435,28 @@ impl App {
                             .render_string(custom_msg, template_ctx)
                             .unwrap_or_else(|_| custom_msg.clone());
 
-                        self.action_message = Some(ActionMessage {
+                        self.activity = ActivityState::Result {
                             message,
-                            message_type: MessageType::Success,
+                            kind: MessageType::Success,
                             timestamp: std::time::Instant::now(),
-                        });
+                        };
                         self.needs_render = true;
+                    } else {
+                        self.activity = ActivityState::Idle;
                     }
                 } else if let Some(success_msg) = &action.success_message {
                     let message = globals::template_engine()
                         .render_string(success_msg, template_ctx)
                         .unwrap_or_else(|_| success_msg.clone());
 
-                    self.action_message = Some(ActionMessage {
+                    self.activity = ActivityState::Result {
                         message,
-                        message_type: MessageType::Success,
+                        kind: MessageType::Success,
                         timestamp: std::time::Instant::now(),
-                    });
+                    };
                     self.needs_render = true;
+                } else {
+                    self.activity = ActivityState::Idle;
                 }
             }
             ActionResult::Error(msg) => {
@@ -1528,11 +1476,11 @@ impl App {
                     msg.clone()
                 };
 
-                self.action_message = Some(ActionMessage {
+                self.activity = ActivityState::Result {
                     message,
-                    message_type: MessageType::Error,
+                    kind: MessageType::Error,
                     timestamp: std::time::Instant::now(),
-                });
+                };
                 self.needs_render = true;
             }
             ActionResult::Refresh => {
@@ -1543,28 +1491,33 @@ impl App {
                             .render_string(custom_msg, template_ctx)
                             .unwrap_or_else(|_| custom_msg.clone());
 
-                        self.action_message = Some(ActionMessage {
+                        self.activity = ActivityState::Result {
                             message,
-                            message_type: MessageType::Success,
+                            kind: MessageType::Success,
                             timestamp: std::time::Instant::now(),
-                        });
+                        };
                         self.needs_render = true;
+                    } else {
+                        self.activity = ActivityState::Idle;
                     }
                 } else if let Some(success_msg) = &action.success_message {
                     let message = globals::template_engine()
                         .render_string(success_msg, template_ctx)
                         .unwrap_or_else(|_| success_msg.clone());
 
-                    self.action_message = Some(ActionMessage {
+                    self.activity = ActivityState::Result {
                         message,
-                        message_type: MessageType::Success,
+                        kind: MessageType::Success,
                         timestamp: std::time::Instant::now(),
-                    });
+                    };
                     self.needs_render = true;
+                } else {
+                    self.activity = ActivityState::Idle;
                 }
             }
             ActionResult::Navigate(..) => {
                 // Navigation handled by caller
+                self.activity = ActivityState::Idle;
             }
         }
     }
@@ -1769,7 +1722,7 @@ impl App {
                 // Use cached data immediately for instant navigation
                 self.current_data = cached_data.clone();
                 self.apply_sort_and_filter();
-                self.loading = false;
+                self.activity = ActivityState::Idle;
                 self.needs_render = true;
 
                 // Load fresh data in background with spinner
@@ -1888,16 +1841,6 @@ impl App {
         self.render_content(frame, chunks[1]);
         self.render_statusbar(frame, chunks[2]);
 
-        // Render action message if present
-        if let Some(msg) = &self.action_message {
-            self.render_action_message(frame, area, msg);
-        }
-
-        // Render action executing spinner overlay (only when no confirm dialog is showing it)
-        if self.action_executing && self.action_confirm.is_none() {
-            self.render_action_executing(frame, area);
-        }
-
         // Render action menu on top if active
         if self.show_action_menu {
             self.render_action_menu(frame, area);
@@ -1974,19 +1917,47 @@ impl App {
                 .add_modifier(Modifier::BOLD),
         ));
 
-        // Right side: loading spinner (if loading)
-        let right_text = if self.loading || self.is_refreshing {
-            let spinner_char = crate::ui::loading::get_spinner_char(self.spinner_frame);
-            format!(" {} Loading ", spinner_char)
+        // Right side: unified activity indicator
+        let right_text = match &self.activity {
+            ActivityState::Loading { message } => {
+                let spinner_char = crate::ui::loading::get_spinner_char(self.spinner_frame);
+                format!(" {} {} ", spinner_char, message)
+            }
+            ActivityState::Result { message, kind, .. } => {
+                let icon = match kind {
+                    MessageType::Success => "\u{2713}",
+                    MessageType::Error => "\u{2717}",
+                    MessageType::Info => "\u{2139}",
+                    MessageType::Warning => "\u{26a0}",
+                };
+                format!(" {} {} ", icon, message)
+            }
+            ActivityState::Idle => String::new(),
+        };
+
+        // Cap right_text width to prevent overflow
+        let max_right_width = 45_usize;
+        let right_text = if right_text.chars().count() > max_right_width {
+            let truncated: String = right_text.chars().take(max_right_width - 1).collect();
+            format!("{}\u{2026}", truncated)
         } else {
-            String::new()
+            right_text
+        };
+
+        let right_style = match &self.activity {
+            ActivityState::Loading { .. } => Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            ActivityState::Result { kind: MessageType::Success, .. } => Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            ActivityState::Result { kind: MessageType::Error, .. } => Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ActivityState::Result { kind: MessageType::Warning, .. } => Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            ActivityState::Result { kind: MessageType::Info, .. } => Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
+            ActivityState::Idle => Style::default(),
         };
 
         // Split the header area into left and right sections
         let header_block = Block::default().borders(Borders::ALL);
         let inner_area = header_block.inner(area);
 
-        // Create layout for left-aligned breadcrumb and right-aligned spinner
+        // Create layout for left-aligned breadcrumb and right-aligned activity
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
@@ -2002,16 +1973,12 @@ impl App {
         let breadcrumb = Paragraph::new(Line::from(left_spans)).alignment(Alignment::Left);
         frame.render_widget(breadcrumb, chunks[0]);
 
-        // Render right-aligned spinner (if loading)
+        // Render right-aligned activity indicator
         if !right_text.is_empty() {
-            let spinner_widget = Paragraph::new(right_text)
+            let activity_widget = Paragraph::new(right_text)
                 .alignment(Alignment::Right)
-                .style(
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                );
-            frame.render_widget(spinner_widget, chunks[1]);
+                .style(right_style);
+            frame.render_widget(activity_widget, chunks[1]);
         }
     }
 
@@ -2920,172 +2887,6 @@ impl App {
         frame.render_widget(status, area);
     }
 
-    fn render_action_executing(&self, frame: &mut Frame, area: Rect) {
-        use ratatui::layout::Alignment;
-        use ratatui::widgets::Clear;
-
-        let spinner_char = crate::ui::loading::get_spinner_char(self.spinner_frame);
-        let text = format!("{} Executing: {}", spinner_char, self.action_executing_name);
-        let text_len = text.chars().count();
-
-        // Dynamic width: fit content + borders (2) + padding (4)
-        let msg_width = (text_len + 6).min(60) as u16;
-        let msg_height = 3_u16; // border + content + border
-
-        // Position at top-right corner
-        let msg_x = area.width.saturating_sub(msg_width + 1);
-        let msg_y = 1;
-
-        let msg_area = Rect {
-            x: msg_x,
-            y: msg_y,
-            width: msg_width,
-            height: msg_height,
-        };
-
-        frame.render_widget(Clear, msg_area);
-
-        let content = Paragraph::new(Line::from(Span::styled(
-            text,
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                )
-                .style(Style::default().bg(Color::Black)),
-        )
-        .alignment(Alignment::Center);
-
-        frame.render_widget(content, msg_area);
-    }
-
-    fn render_action_message(&self, frame: &mut Frame, area: Rect, msg: &ActionMessage) {
-        use ratatui::layout::Alignment;
-        use ratatui::widgets::Clear;
-
-        let (color, icon, title) = match msg.message_type {
-            MessageType::Success => (Color::Green, "✓", "Success"),
-            MessageType::Error => (Color::Red, "✗", "Error"),
-            MessageType::Info => (Color::Blue, "ℹ", "Info"),
-            MessageType::Warning => (Color::Yellow, "⚠", "Warning"),
-        };
-
-        // Calculate dynamic width based on message length
-        let icon_title_len = icon.chars().count() + 1 + title.len(); // icon + space + title
-        let message_len = msg.message.chars().count();
-        let max_line_len = icon_title_len.max(message_len);
-
-        // Dynamic width: fit content + borders (2) + padding (4)
-        let content_width = max_line_len.min(60); // Max 60 chars for readability
-        let msg_width = (content_width + 6) as u16; // +6 for borders and padding
-
-        // Word wrap the message to fit within the width
-        let wrapped_lines = Self::wrap_text(&msg.message, content_width);
-
-        // Calculate height based on wrapped lines
-        // icon line + spacing + message lines + padding + borders
-        let content_height = wrapped_lines.len() as u16;
-        let msg_height = (content_height + 6).min(area.height.saturating_sub(2)); // +6 for icon, spacing, padding, borders
-
-        // Position at top-right corner
-        let msg_x = area.width.saturating_sub(msg_width + 1); // 1 char padding from right edge
-        let msg_y = 1; // 1 char from top
-
-        let msg_area = Rect {
-            x: msg_x,
-            y: msg_y,
-            width: msg_width,
-            height: msg_height,
-        };
-
-        // Clear the background area to hide content behind
-        frame.render_widget(Clear, msg_area);
-
-        // Build the message text with wrapped lines and icon
-        let mut message_lines = vec![Line::from("")]; // Top padding
-
-        // Add icon line
-        message_lines.push(Line::from(Span::styled(
-            format!("{} {}", icon, title),
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
-        )));
-        message_lines.push(Line::from("")); // Spacing
-
-        // Add message lines
-        for line in wrapped_lines {
-            message_lines.push(Line::from(Span::styled(
-                line,
-                Style::default().fg(Color::White),
-            )));
-        }
-        message_lines.push(Line::from("")); // Bottom padding
-
-        let message_box = Paragraph::new(message_lines)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(color).add_modifier(Modifier::BOLD))
-                    .style(Style::default().bg(Color::Black)),
-            )
-            .alignment(Alignment::Left)
-            .wrap(ratatui::widgets::Wrap { trim: true });
-
-        frame.render_widget(message_box, msg_area);
-    }
-
-    fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
-        let mut lines = Vec::new();
-        let words: Vec<&str> = text.split_whitespace().collect();
-        let mut current_line = String::new();
-
-        for word in words {
-            // If the word itself is longer than max_width, split it
-            if word.len() > max_width {
-                if !current_line.is_empty() {
-                    lines.push(current_line.clone());
-                    current_line.clear();
-                }
-                // Split long word into chunks
-                for chunk in word.chars().collect::<Vec<_>>().chunks(max_width) {
-                    lines.push(chunk.iter().collect());
-                }
-                continue;
-            }
-
-            let potential_line = if current_line.is_empty() {
-                word.to_string()
-            } else {
-                format!("{} {}", current_line, word)
-            };
-
-            if potential_line.len() <= max_width {
-                current_line = potential_line;
-            } else {
-                if !current_line.is_empty() {
-                    lines.push(current_line);
-                }
-                current_line = word.to_string();
-            }
-        }
-
-        if !current_line.is_empty() {
-            lines.push(current_line);
-        }
-
-        // Return at least one line even if empty
-        if lines.is_empty() {
-            lines.push(String::new());
-        }
-
-        lines
-    }
 
     fn render_action_menu(&self, frame: &mut Frame, area: Rect) {
         use ratatui::layout::Alignment;
@@ -3218,10 +3019,14 @@ impl App {
         if confirm.executing {
             // Show executing state with spinner
             let spinner_char = crate::ui::loading::get_spinner_char(self.spinner_frame);
+            let action_name = match &self.activity {
+                ActivityState::Loading { message } => message.as_str(),
+                _ => "action",
+            };
             let dialog_text = vec![
                 Line::from(""),
                 Line::from(Span::styled(
-                    format!("{} Executing: {}", spinner_char, confirm.action.name),
+                    format!("{} {}", spinner_char, action_name),
                     Style::default()
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD),
