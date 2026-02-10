@@ -491,6 +491,8 @@ impl App {
         self.activity = ActivityState::Loading { message: format!("Loading {}...", self.current_page) };
         self.spinner_frame = 0; // Reset spinner animation
         self.error_message = None;
+        self.current_data.clear();
+        self.filtered_indices.clear();
         self.needs_render = true; // Force render to show spinner
 
         // Stop any active stream from previous page
@@ -2804,15 +2806,42 @@ impl App {
     }
 
     fn render_statusbar(&self, frame: &mut Frame, area: Rect) {
-        // Build navigation shortcuts (always shown)
-        let nav_shortcuts = if self.stream_active && !self.logs_wrap {
-            "j/k: Scroll  |  h/l: Side-scroll  |  g/G: Top/Bottom  |  /: Search  |  f: LIVE/Pause  |  w: Wrap  |  ESC: Back  |  q: Quit"
-        } else if self.stream_active {
-            "j/k: Scroll  |  g/G: Top/Bottom  |  /: Search  |  f: LIVE/Pause  |  w: Wrap  |  ESC: Back  |  q: Quit"
-        } else if self.current_data.is_empty() {
-            "q/ESC: Quit  |  r: Refresh"
-        } else {
-            "j/k: Move  |  g/G: Top/Bottom  |  Enter: Select  |  /: Search (%col% term)  |  ESC: Back  |  r: Refresh  |  q: Quit"
+        // Build navigation shortcuts based on view type
+        let view_kind = globals::config()
+            .pages
+            .get(&self.current_page)
+            .map(|p| match &p.view {
+                ConfigView::Table(_) => "table",
+                ConfigView::Logs(_) => "logs",
+                ConfigView::Text(_) => "text",
+            });
+
+        let nav_shortcuts = match view_kind.unwrap_or("table") {
+            "logs" => {
+                let has_buffer = self.stream_active || !self.stream_buffer.is_empty();
+                if has_buffer && !self.logs_wrap {
+                    "j/k: Scroll  |  h/l: Side-scroll  |  g/G: Top/Bottom  |  /: Search  |  f: LIVE/Pause  |  w: Wrap  |  r: Restart  |  ESC: Back  |  q: Quit"
+                } else if has_buffer {
+                    "j/k: Scroll  |  g/G: Top/Bottom  |  /: Search  |  f: LIVE/Pause  |  w: Wrap  |  r: Restart  |  ESC: Back  |  q: Quit"
+                } else {
+                    "q/ESC: Quit  |  r: Refresh"
+                }
+            }
+            "text" => {
+                if self.current_data.is_empty() {
+                    "q/ESC: Quit  |  r: Refresh"
+                } else {
+                    "j/k: Scroll  |  g/G: Top/Bottom  |  /: Search  |  ESC: Back  |  r: Refresh  |  q: Quit"
+                }
+            }
+            _ => {
+                // Table view (default)
+                if self.current_data.is_empty() {
+                    "q/ESC: Quit  |  r: Refresh"
+                } else {
+                    "j/k: Move  |  g/G: Top/Bottom  |  Enter: Select  |  /: Search (%col% term)  |  ESC: Back  |  r: Refresh  |  q: Quit"
+                }
+            }
         };
 
         let row_info = if self.stream_active {
@@ -2860,22 +2889,58 @@ impl App {
             Span::styled(nav_shortcuts, Style::default().fg(Color::White)),
         ]);
 
-        // Build action hint (if available)
+        // Build hints line (next page indicator + action hint)
         let action_line = if let Some(page) = globals::config().pages.get(&self.current_page) {
-            if page.actions.as_ref().map(|a| !a.is_empty()).unwrap_or(false) {
-                Line::from(vec![
-                    Span::styled("Press ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(
-                        "Shift+A",
+            use crate::config::Navigation;
+            let mut hint_spans: Vec<Span> = Vec::new();
+
+            // Next page hint
+            if let Some(nav) = &page.next {
+                let next_label = match nav {
+                    Navigation::Simple(s) => s.page.clone(),
+                    Navigation::Conditional(conds) => {
+                        if conds.len() == 1 {
+                            conds[0].page.clone()
+                        } else if !conds.is_empty() {
+                            format!("{}|...", conds[0].page)
+                        } else {
+                            String::new()
+                        }
+                    }
+                };
+                if !next_label.is_empty() {
+                    hint_spans.push(Span::styled(
+                        "Enter",
                         Style::default()
                             .fg(Color::Cyan)
                             .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(" for actions", Style::default().fg(Color::DarkGray)),
-                ])
-            } else {
-                Line::from("")
+                    ));
+                    hint_spans.push(Span::styled(
+                        format!(" → {}", next_label),
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                }
             }
+
+            // Action hint
+            if page.actions.as_ref().map(|a| !a.is_empty()).unwrap_or(false) {
+                if !hint_spans.is_empty() {
+                    hint_spans.push(Span::styled(
+                        "  |  ",
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                }
+                hint_spans.push(Span::styled("Press ", Style::default().fg(Color::DarkGray)));
+                hint_spans.push(Span::styled(
+                    "Shift+A",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ));
+                hint_spans.push(Span::styled(" for actions", Style::default().fg(Color::DarkGray)));
+            }
+
+            Line::from(hint_spans)
         } else {
             Line::from("")
         };
