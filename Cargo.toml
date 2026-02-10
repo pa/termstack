@@ -11,6 +11,7 @@ edition = "2024"
 crossterm = "0.28.1"
 ratatui = "0.29.0"
 color-eyre = "0.6.3"
+unicode-width = "0.2"
 
 # Async Runtime (optimized - only needed features)
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "process", "io-util", "macros"] }

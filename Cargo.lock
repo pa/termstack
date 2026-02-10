@@ -2274,6 +2274,7 @@ dependencies = [
  "tokio",
  "tui-input",
  "tui-syntax-highlight",
+ "unicode-width 0.2.0",
 ]
 
 [[package]]

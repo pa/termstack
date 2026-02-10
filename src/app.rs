@@ -8,6 +8,7 @@ use ratatui::{
 };
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -279,6 +280,12 @@ impl GlobalSearch {
     }
 }
 
+#[derive(Clone)]
+struct LogLine {
+    raw: String,            // ANSI-stripped plain text (for search matching)
+    parsed: Line<'static>,  // Pre-parsed styled spans (for rendering)
+}
+
 pub struct App {
     running: bool,
     current_page: String,
@@ -311,8 +318,8 @@ pub struct App {
     // Stream state
     stream_active: bool,
     stream_paused: bool,
-    stream_buffer: VecDeque<String>,
-    stream_frozen_snapshot: Option<Arc<VecDeque<String>>>, // Frozen snapshot when paused (Arc for efficient cloning)
+    stream_buffer: VecDeque<LogLine>,
+    stream_frozen_snapshot: Option<Arc<VecDeque<LogLine>>>, // Frozen snapshot when paused (Arc for efficient cloning)
     stream_receiver: Option<mpsc::Receiver<StreamMessage>>,
     stream_status: StreamStatus,
 
@@ -442,6 +449,76 @@ impl App {
             refresh_receiver: None,
             page_cache: HashMap::new(),
         })
+    }
+
+    /// Parse a raw ANSI string into a LogLine with pre-parsed styled spans.
+    /// Called once per line at insertion time. Sanitizes span content to remove
+    /// any residual control characters (ESC, CR, BS, etc.) that ansi_to_tui
+    /// didn't convert — these corrupt terminal state during ratatui rendering.
+    fn parse_and_store_line(raw_ansi: &str) -> LogLine {
+        use ansi_to_tui::IntoText;
+        let parsed = match raw_ansi.into_text() {
+            Ok(text) => {
+                if text.lines.is_empty() {
+                    Line::from(raw_ansi.to_string())
+                } else {
+                    text.lines.into_iter().next().unwrap()
+                }
+            }
+            Err(_) => {
+                // Fallback: strip all control chars from raw input
+                let clean: String = raw_ansi.chars()
+                    .map(|c| if c == '\t' { ' ' } else { c })
+                    .filter(|c| !c.is_control())
+                    .collect();
+                Line::from(clean)
+            }
+        };
+        // Sanitize each span: replace tabs with spaces, strip remaining control chars
+        let sanitized_spans: Vec<Span<'static>> = parsed.spans.into_iter().map(|span| {
+            let clean: String = span.content.chars()
+                .map(|c| if c == '\t' { ' ' } else { c })
+                .filter(|c| !c.is_control())
+                .collect();
+            Span::styled(clean, span.style)
+        }).collect();
+        let parsed = Line::from(sanitized_spans);
+        // Build ANSI-stripped plain text by concatenating span contents
+        let raw: String = parsed.spans.iter().map(|s| s.content.as_ref()).collect();
+        LogLine { raw, parsed }
+    }
+
+    /// Truncate a pre-parsed Line at character boundaries using unicode widths.
+    /// Skips `char_offset` display columns, then takes up to `width` columns.
+    /// Preserves span styles through truncation.
+    fn format_log_line(line: &Line<'static>, char_offset: usize, width: usize) -> Line<'static> {
+        let mut result_spans: Vec<Span<'static>> = Vec::new();
+        let mut cols_skipped: usize = 0;
+        let mut cols_taken: usize = 0;
+
+        for span in &line.spans {
+            if cols_taken >= width {
+                break;
+            }
+            let mut sliced = String::new();
+            for ch in span.content.chars() {
+                let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+                if cols_skipped < char_offset {
+                    cols_skipped += cw;
+                    continue;
+                }
+                if cols_taken + cw > width {
+                    break;
+                }
+                sliced.push(ch);
+                cols_taken += cw;
+            }
+            if !sliced.is_empty() {
+                result_spans.push(Span::styled(sliced, span.style));
+            }
+        }
+
+        Line::from(result_spans)
     }
 
     pub async fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
@@ -846,8 +923,8 @@ impl App {
                     StreamMessage::Data(line) => {
                         self.stream_status = StreamStatus::Streaming;
 
-                        // Add to buffer
-                        self.stream_buffer.push_back(line);
+                        // Add to buffer (parse ANSI once at insertion time)
+                        self.stream_buffer.push_back(Self::parse_and_store_line(&line));
 
                         // Remove oldest if buffer is full
                         while self.stream_buffer.len() > buffer_size {
@@ -1347,7 +1424,7 @@ impl App {
         if !self.stream_active && self.stream_buffer.is_empty() {
             return None;
         }
-        let display_buffer: &VecDeque<String> = if self.stream_paused {
+        let display_buffer: &VecDeque<LogLine> = if self.stream_paused {
             if let Some(ref snapshot) = self.stream_frozen_snapshot {
                 snapshot.as_ref()
             } else {
@@ -1359,7 +1436,7 @@ impl App {
         let indices: Vec<usize> = display_buffer
             .iter()
             .enumerate()
-            .filter(|(_, line)| self.global_search.matches(line))
+            .filter(|(_, log_line)| self.global_search.matches(&log_line.raw))
             .map(|(idx, _)| idx)
             .collect();
         Some(indices)
@@ -2704,25 +2781,6 @@ impl App {
         }
     }
 
-    /// Parse ANSI escape codes in text and convert to ratatui Line with styles
-    fn parse_ansi_line(&self, text: &str) -> Line<'static> {
-        use ansi_to_tui::IntoText;
-        match text.into_text() {
-            Ok(parsed_text) => {
-                // Convert Text to Line - take first line or empty
-                if parsed_text.lines.is_empty() {
-                    Line::from(text.to_string())
-                } else {
-                    parsed_text.lines[0].clone()
-                }
-            }
-            Err(_) => {
-                // Fallback: return plain text if parsing fails
-                Line::from(text.to_string())
-            }
-        }
-    }
-
     fn render_logs(
         &mut self,
         frame: &mut Frame,
@@ -2735,7 +2793,7 @@ impl App {
         // For streaming logs, render from stream buffer
         if self.stream_active || !self.stream_buffer.is_empty() {
             // Use frozen snapshot when paused, otherwise use live buffer
-            let display_buffer: &VecDeque<String> = if self.stream_paused {
+            let display_buffer: &VecDeque<LogLine> = if self.stream_paused {
                 if let Some(ref snapshot) = self.stream_frozen_snapshot {
                     snapshot.as_ref()
                 } else {
@@ -2758,7 +2816,7 @@ impl App {
                 display_buffer
                     .iter()
                     .enumerate()
-                    .filter(|(_, line)| self.global_search.matches(line))
+                    .filter(|(_, log_line)| self.global_search.matches(&log_line.raw))
                     .map(|(idx, _)| idx)
                     .collect()
             } else {
@@ -2825,11 +2883,10 @@ impl App {
                 if !self.logs_wrap && lines.len() >= visible_height {
                     break;
                 }
-                let line = &display_buffer[actual_idx];
-                let display_line = line.clone();
+                let log_line = &display_buffer[actual_idx];
 
-                // Parse ANSI codes to preserve colors
-                let mut parsed_line = self.parse_ansi_line(&display_line);
+                // Use pre-parsed spans (ANSI already parsed at insertion time)
+                let mut parsed_line = log_line.parsed.clone();
 
                 // Highlight search matches in log line
                 if self.global_search.filter_active {
@@ -2838,7 +2895,6 @@ impl App {
 
                 // Apply selection highlighting if this is the selected line
                 if actual_idx == self.selected_index {
-                    // Add background to all spans in the line
                     for span in &mut parsed_line.spans {
                         span.style = span.style.bg(Color::DarkGray).add_modifier(Modifier::BOLD);
                     }
@@ -2846,43 +2902,34 @@ impl App {
 
                 // Handle wrapping if enabled
                 if self.logs_wrap {
-                    // For wrapping, we need to handle line width
-                    let line_width: usize = parsed_line.spans.iter().map(|s| s.content.len()).sum();
-
-                    if line_width > content_width {
-                        // TODO: Proper wrapping with ANSI styles is complex
-                        // For now, just push the line and let Paragraph wrap it
-                        lines.push(parsed_line);
-                    } else {
-                        lines.push(parsed_line);
-                    }
+                    lines.push(parsed_line);
                 } else {
                     // Single line with horizontal scroll support
-                    if !self.logs_wrap && display_line.len() > content_width {
-                        // Apply horizontal scroll offset
-                        let start = self.logs_horizontal_scroll.min(display_line.len());
-                        let end = (start + content_width).min(display_line.len());
-                        let slice = &display_line[start..end];
+                    let visual_width: usize = parsed_line.spans.iter().map(|s| UnicodeWidthStr::width(s.content.as_ref())).sum();
 
-                        // Add indicators for horizontal scroll
-                        let left_indicator = if self.logs_horizontal_scroll > 0 {
-                            "< "
-                        } else {
-                            ""
-                        };
-                        let right_indicator = if end < display_line.len() { " >" } else { "" };
+                    if visual_width > content_width {
+                        let scroll = self.logs_horizontal_scroll.min(visual_width);
+                        let has_left = scroll > 0;
+                        let has_right_estimate = scroll + content_width < visual_width;
+                        // Reserve columns for scroll indicators so content fits viewport
+                        let indicator_cols = if has_left { 2 } else { 0 } + if has_right_estimate { 2 } else { 0 };
+                        let available = content_width.saturating_sub(indicator_cols);
 
-                        let visible_line =
-                            format!("{}{}{}", left_indicator, slice, right_indicator);
-                        let mut scrolled_line = self.parse_ansi_line(&visible_line);
+                        let mut result_spans: Vec<Span> = Vec::new();
 
-                        if actual_idx == self.selected_index {
-                            for span in &mut scrolled_line.spans {
-                                span.style =
-                                    span.style.bg(Color::DarkGray).add_modifier(Modifier::BOLD);
-                            }
+                        if has_left {
+                            result_spans.push(Span::styled("< ", Style::default().fg(Color::DarkGray)));
                         }
-                        lines.push(scrolled_line);
+
+                        let truncated = Self::format_log_line(&parsed_line, scroll, available);
+                        let cols_taken: usize = truncated.spans.iter().map(|s| UnicodeWidthStr::width(s.content.as_ref())).sum();
+                        result_spans.extend(truncated.spans);
+
+                        if scroll + cols_taken < visual_width {
+                            result_spans.push(Span::styled(" >", Style::default().fg(Color::DarkGray)));
+                        }
+
+                        lines.push(Line::from(result_spans));
                     } else {
                         lines.push(parsed_line);
                     }
