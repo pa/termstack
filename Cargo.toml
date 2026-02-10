@@ -38,7 +38,7 @@ humantime = "2"
 humansize = "2"
 tui-input = "0.10"
 regex = "1"
-ansi-to-tui = "7"
+ansi-to-tui = "8"
 
 # Syntax highlighting
 tui-syntax-highlight = "0.1"
