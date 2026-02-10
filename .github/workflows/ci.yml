@@ -54,6 +54,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set version from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          sed -i.bak "s/^version = \".*\"/version = \"${VERSION}\"/" Cargo.toml
+          rm -f Cargo.toml.bak
+          echo "Set version to ${VERSION}"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:

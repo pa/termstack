@@ -199,6 +199,84 @@ impl GlobalSearch {
         // Default to global search
         SearchMode::Global
     }
+
+    /// Highlight search matches within spans by splitting them at match boundaries.
+    /// Match regions get yellow background with black foreground overlay.
+    fn highlight_search_in_spans<'a>(&self, spans: Vec<Span<'a>>) -> Vec<Span<'a>> {
+        if !self.filter_active || self.query.is_empty() {
+            return spans;
+        }
+
+        // For ColumnSpecific mode, use the search_term for highlighting
+        let effective_query = match &self.mode {
+            SearchMode::ColumnSpecific { search_term, .. } => search_term.as_str(),
+            SearchMode::Global => &self.query,
+        };
+
+        if effective_query.is_empty() {
+            return spans;
+        }
+
+        // Build a regex for finding matches in text
+        let pattern = if effective_query.starts_with('!') {
+            let pat = &effective_query[1..];
+            if pat.is_empty() {
+                return spans;
+            }
+            if self.case_sensitive {
+                Regex::new(pat)
+            } else {
+                Regex::new(&format!("(?i){}", pat))
+            }
+        } else {
+            let escaped = regex::escape(effective_query);
+            if self.case_sensitive {
+                Regex::new(&escaped)
+            } else {
+                Regex::new(&format!("(?i){}", escaped))
+            }
+        };
+
+        let regex = match pattern {
+            Ok(r) => r,
+            Err(_) => return spans,
+        };
+
+        let highlight_style_modifier = |base: Style| -> Style {
+            base.bg(Color::Yellow).fg(Color::Black)
+        };
+
+        let mut result = Vec::new();
+        for span in spans {
+            let text = span.content.as_ref();
+            let style = span.style;
+
+            let mut last_end = 0;
+            for m in regex.find_iter(text) {
+                // Add text before match with original style
+                if m.start() > last_end {
+                    result.push(Span::styled(
+                        text[last_end..m.start()].to_string(),
+                        style,
+                    ));
+                }
+                // Add matched text with highlight style
+                result.push(Span::styled(
+                    text[m.start()..m.end()].to_string(),
+                    highlight_style_modifier(style),
+                ));
+                last_end = m.end();
+            }
+            // Add remaining text after last match
+            if last_end < text.len() {
+                result.push(Span::styled(text[last_end..].to_string(), style));
+            } else if last_end == 0 {
+                // No matches found in this span, keep as-is
+                result.push(span);
+            }
+        }
+        result
+    }
 }
 
 pub struct App {
@@ -1260,6 +1338,33 @@ impl App {
         }
     }
 
+    /// Returns filtered line indices for the logs buffer when search filter is active.
+    /// Returns None if not in logs/stream mode or no filter is active.
+    fn get_logs_filtered_indices(&self) -> Option<Vec<usize>> {
+        if !self.global_search.filter_active {
+            return None;
+        }
+        if !self.stream_active && self.stream_buffer.is_empty() {
+            return None;
+        }
+        let display_buffer: &VecDeque<String> = if self.stream_paused {
+            if let Some(ref snapshot) = self.stream_frozen_snapshot {
+                snapshot.as_ref()
+            } else {
+                &self.stream_buffer
+            }
+        } else {
+            &self.stream_buffer
+        };
+        let indices: Vec<usize> = display_buffer
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| self.global_search.matches(line))
+            .map(|(idx, _)| idx)
+            .collect();
+        Some(indices)
+    }
+
     fn get_selected_row(&self) -> Option<&Value> {
         self.filtered_indices
             .get(self.selected_index)
@@ -1599,6 +1704,15 @@ impl App {
             return;
         }
 
+        // Logs view with filter: jump to next matching line
+        if let Some(filtered) = self.get_logs_filtered_indices() {
+            if let Some(&next_idx) = filtered.iter().find(|&&idx| idx > self.selected_index) {
+                self.selected_index = next_idx;
+                self.needs_render = true;
+            }
+            return;
+        }
+
         let max_index = if self.stream_active || !self.stream_buffer.is_empty() {
             // Stream mode: use display buffer (frozen snapshot if paused)
             let display_buffer_len = if self.stream_paused
@@ -1643,6 +1757,15 @@ impl App {
             return;
         }
 
+        // Logs view with filter: jump to previous matching line
+        if let Some(filtered) = self.get_logs_filtered_indices() {
+            if let Some(&prev_idx) = filtered.iter().rev().find(|&&idx| idx < self.selected_index) {
+                self.selected_index = prev_idx;
+                self.needs_render = true;
+            }
+            return;
+        }
+
         if self.selected_index > 0 {
             self.selected_index -= 1;
             // Always render cursor movement, even when paused
@@ -1661,6 +1784,15 @@ impl App {
             return;
         }
 
+        // Logs view with filter: jump to first matching line
+        if let Some(filtered) = self.get_logs_filtered_indices() {
+            if let Some(&first_idx) = filtered.first() {
+                self.selected_index = first_idx;
+                self.needs_render = true;
+            }
+            return;
+        }
+
         self.selected_index = 0;
         // Always render cursor movement, even when paused
         self.needs_render = true;
@@ -1674,6 +1806,15 @@ impl App {
             // Text view: scroll to bottom (will be clamped in render_text)
             self.scroll_offset = usize::MAX;
             self.needs_render = true;
+            return;
+        }
+
+        // Logs view with filter: jump to last matching line
+        if let Some(filtered) = self.get_logs_filtered_indices() {
+            if let Some(&last_idx) = filtered.last() {
+                self.selected_index = last_idx;
+                self.needs_render = true;
+            }
             return;
         }
 
@@ -2134,7 +2275,23 @@ impl App {
 
                         // Apply column styling
                         let cell_style = self.apply_column_style(col, &extracted_value, item);
-                        Cell::from(value_str).style(cell_style)
+
+                        // Highlight search matches in cell text
+                        if self.global_search.filter_active {
+                            let should_highlight = match &self.global_search.mode {
+                                SearchMode::Global => true,
+                                SearchMode::ColumnSpecific { column_path, .. } => col.path == *column_path,
+                            };
+                            if should_highlight {
+                                let spans = vec![Span::styled(value_str, cell_style)];
+                                let highlighted = self.global_search.highlight_search_in_spans(spans);
+                                Cell::from(Line::from(highlighted))
+                            } else {
+                                Cell::from(value_str).style(cell_style)
+                            }
+                        } else {
+                            Cell::from(value_str).style(cell_style)
+                        }
                     })
                     .collect();
 
@@ -2443,6 +2600,11 @@ impl App {
                     _ => spans.push(Span::raw(line.to_string())),
                 }
 
+                // Highlight search matches over syntax colors
+                if self.global_search.filter_active {
+                    spans = self.global_search.highlight_search_in_spans(spans);
+                }
+
                 Line::from(spans)
             })
             .collect()
@@ -2607,13 +2769,28 @@ impl App {
             // Calculate visible area
             let visible_height = area.height.saturating_sub(2) as usize; // Account for borders
 
-            // When follow is enabled, ensure we stay at the bottom of the buffer
-            if self.logs_follow && !self.stream_paused && !display_buffer.is_empty() {
-                self.selected_index = display_buffer.len() - 1;
+            // When follow is enabled, snap to last filtered line (or last buffer line if no filter)
+            if self.logs_follow && !self.stream_paused {
+                if let Some(&last_idx) = filtered_indices.last() {
+                    self.selected_index = last_idx;
+                }
             }
 
-            // Ensure selected_index is within bounds of the display buffer
-            if !display_buffer.is_empty() {
+            // Ensure selected_index is within bounds and lands on a filtered line
+            if !filtered_indices.is_empty() {
+                // Clamp to buffer bounds first
+                if !display_buffer.is_empty() {
+                    self.selected_index = self.selected_index.min(display_buffer.len() - 1);
+                }
+                // Snap to nearest filtered line if current index isn't in the filtered set
+                if !filtered_indices.contains(&self.selected_index) {
+                    // Find the closest filtered index
+                    self.selected_index = *filtered_indices
+                        .iter()
+                        .min_by_key(|&&idx| (idx as isize - self.selected_index as isize).unsigned_abs())
+                        .unwrap();
+                }
+            } else if !display_buffer.is_empty() {
                 self.selected_index = self.selected_index.min(display_buffer.len() - 1);
             }
 
@@ -2653,6 +2830,11 @@ impl App {
 
                 // Parse ANSI codes to preserve colors
                 let mut parsed_line = self.parse_ansi_line(&display_line);
+
+                // Highlight search matches in log line
+                if self.global_search.filter_active {
+                    parsed_line = Line::from(self.global_search.highlight_search_in_spans(parsed_line.spans));
+                }
 
                 // Apply selection highlighting if this is the selected line
                 if actual_idx == self.selected_index {
@@ -2844,8 +3026,38 @@ impl App {
             }
         };
 
-        let row_info = if self.stream_active {
-            // Use frozen snapshot size when paused, otherwise use live buffer
+        let row_info = if (self.stream_active || !self.stream_buffer.is_empty())
+            && self.global_search.filter_active
+        {
+            // Logs view with filter: show filtered count
+            let buffer_len = if self.stream_paused
+                && self
+                    .stream_frozen_snapshot
+                    .as_ref()
+                    .is_some_and(|s| !s.is_empty())
+            {
+                self.stream_frozen_snapshot.as_ref().unwrap().len()
+            } else {
+                self.stream_buffer.len()
+            };
+            if let Some(filtered) = self.get_logs_filtered_indices() {
+                let filter_pos = filtered
+                    .iter()
+                    .position(|&idx| idx == self.selected_index)
+                    .map(|p| p + 1)
+                    .unwrap_or(0);
+                format!(
+                    "Filtered: {}/{} | Line {}/{}",
+                    filtered.len(),
+                    buffer_len,
+                    filter_pos,
+                    filtered.len()
+                )
+            } else {
+                format!("Lines: {} | Line {}/{}", buffer_len, self.selected_index + 1, buffer_len)
+            }
+        } else if self.stream_active || !self.stream_buffer.is_empty() {
+            // Logs view without filter
             let buffer_len = if self.stream_paused
                 && self
                     .stream_frozen_snapshot

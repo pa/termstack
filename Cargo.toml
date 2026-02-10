@@ -1,6 +1,6 @@
 [package]
 name = "termstack"
-version = "0.1.0"
+version = "0.0.0-dev"
 description = "A generic TUI framework for building rich, navigable dashboards using simple YAML — no UI coding required."
 authors = ["pa <pramodh.ayyappan@hotmail.com>"]
 license = "MIT"
